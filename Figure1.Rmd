@@ -1,0 +1,1579 @@
+---
+title: "CD4_paper_Fig1"
+output: html_document
+date: "2026-01-14"
+---
+
+```{r setup, include=FALSE}
+
+```
+
+
+# ============================================================
+# Fig 1B - dotplot
+# ============================================================
+
+```{r}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(ggplot2)
+  library(ggpubr)
+  library(scales)
+  library(RColorBrewer)
+})
+
+# 1) Load Seurat object
+seu <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/RDS objects/newTcells_newPID_version1-TS260825.rds")
+
+# Identity class: make sure this column exists
+stopifnot("cell.types" %in% colnames(seu@meta.data))
+Idents(seu) <- "cell.types"
+seu@meta.data[seu@meta.data$cell.types == "Tk CD8",]$cell.types = "UTC"
+seu@meta.data[seu@meta.data$cell.types == "Tem CD8",]$cell.types = "GZMK+ Tem CD8"
+seu@meta.data[seu@meta.data$cell.types == "Tm CD8",]$cell.types = "Activated Tem CD8"
+
+
+# Define gene modules (ordered)
+gene_sets <- list(
+  "Tcm Treg" = c("RTKN2","PLCL1","TIAM1"),
+  "TIL Treg" = c(  
+    "FOXP3","BATF","IL2RA","CCR8","CTLA4",
+    "TNFRSF4","TNFRSF9","TNFRSF18","ENTPD1","LAYN","GATA3","CD177"
+  ),
+  "Tfh"           = c("CXCR5","CXCL13","SH2D1A","TOX2"),
+  "Th17"          = c("IL17A","IL17F","RORC","KLRB1","CCR6","IL23R"),
+  "Progenitor"    = c("SELL","CCR7","TCF7","LEF1","KLF2")
+)
+
+module_levels <- c("Progenitor", "Th17", "Tfh", "Tcm Treg", "TIL Treg")
+
+celltype_levels <- c(
+  "BATF Treg",
+  "Tcm-like Treg",
+  "Proliferating",
+  "Tfh CD4",
+  "Th17 CD4",
+  "Progenitor CD4"
+)
+
+genes_df <- enframe(gene_sets, name = "module", value = "gene") |>
+  unnest(gene) |>
+  select(gene, module) |>
+  mutate(module = factor(module, levels = module_levels))
+
+gene_levels <- unlist(gene_sets[module_levels], use.names = FALSE)
+
+# Optional safety checks
+stopifnot(!anyDuplicated(gene_levels))
+
+
+
+# 3) Pull expression (data slot) + metadata
+DefaultAssay(seu) <- "RNA"
+
+# Keep only genes present in object (prevents subscript errors)
+genes_present <- intersect(genes_df$gene, rownames(seu))
+genes_missing <- setdiff(genes_df$gene, rownames(seu))
+if (length(genes_missing) > 0) {
+  message("Missing genes dropped: ", paste(genes_missing, collapse = ", "))
+}
+
+# FetchData returns a cell-by-feature data.frame, plus metadata columns you request
+df <- FetchData(
+  object = seu,
+  vars   = c("cell.types", genes_present),
+  layer   = "data"
+) %>%
+  tibble::rownames_to_column("cell.id")
+
+# Restrict to the CD4/Treg/Prolif groups you want
+df <- df %>%
+  filter(grepl("CD4|Treg|Prolif", cell.types))
+
+# Long format: one row per cell-gene
+df_long <- df %>%
+  pivot_longer(
+    cols      = all_of(genes_present),
+    names_to  = "gene",
+    values_to = "expr"
+  )
+
+
+# 4) Summaries: mean expression + % expressing
+summ <- df_long %>%
+  group_by(cell.types, gene) %>%
+  summarise(
+    mean_expr = mean(expr),
+    perc_expr = mean(expr > 0) * 100,
+    .groups   = "drop"
+  ) %>%
+  left_join(genes_df %>% filter(gene %in% genes_present), by = "gene")
+
+# Scale mean expression per gene (z-score across cell.types)
+summ <- summ %>%
+  group_by(gene) %>%
+  mutate(scaled_mean_expr = as.numeric(scale(mean_expr))) %>%
+  ungroup()
+
+# Apply factors for consistent ordering
+summ <- summ %>%
+  mutate(
+    cell.types = factor(cell.types, levels = celltype_levels),
+    module     = factor(module, levels = module_levels),
+    gene       = factor(gene, levels = gene_levels)
+  )
+
+# 5) Plot
+p <- ggplot(summ, aes(x = gene, y = cell.types)) +
+  geom_point(aes(fill = scaled_mean_expr, size = perc_expr), shape = 21, colour = "black", stroke = 0) +
+  scale_fill_gradientn(
+    colours = c("darkblue", "#6DCCFF", "lightblue2", "white",
+                "lightgoldenrod2", "darkorange1", "red", "firebrick"),
+    values = scales::rescale(c(-1.8, -1.2, -0.6, 0, 0.6, 1.2, 1.5, 1.8),
+                            from = c(-1.8, 1.8)),
+    limits = c(-1.8, 1.8),
+    oob = scales::squish
+  ) +
+  scale_radius(range = c(1, 10)) +
+  facet_grid(~module, scales = "free_x", space = "free_x") +
+  scale_y_discrete(limits = rev) +
+  theme_pubr() +
+  theme(
+    axis.line        = element_line(colour = "black"),
+    panel.background = element_rect(colour = "black", fill = NA),
+    panel.grid.major = element_line(colour = "grey", linewidth = 0.2),
+    axis.text.x      = element_text(size = 20, colour = "black", angle = 90, hjust=1, vjust = 0.5),
+    axis.text.y      = element_text(size = 20, colour = "black"),
+    strip.text       = element_text(size = 15, colour = "black"),
+    legend.text      = element_text(size = 15, colour = "black"),
+    legend.title     = element_text(size = 18, colour = "black")
+  ) +
+  labs(x = NULL, y = NULL)
+
+p
+
+#ggsave("plots/Dotplot/dotplot2.pdf", plot = p, dpi = 320, width = 12, height = 6)
+```
+# ============================================================
+# Fig 1C - UMAP
+# ============================================================
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+md1 <- seu@meta.data
+
+set.seed(1)
+md1_plot <- md |> slice_sample(prop = 1)  # random plotting order
+
+centroids <- md1_plot |>
+  group_by(cell.types) |>
+  summarise(
+    UMAP_1 = median(UMAP_1, na.rm = TRUE),
+    UMAP_2 = median(UMAP_2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p <- ggplot(md1_plot, aes(x = UMAP_1, y = UMAP_2)) +
+  geom_point(
+    aes(fill = cell.types),
+    shape = 21,
+    size = 6,
+    alpha = 0.8,
+    stroke = 0,
+    colour = "transparent"
+  ) +
+  geom_label_repel(
+    data = centroids,
+    aes(label = cell.types),
+    max.overlaps = 20,
+    size = 6
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 20, hjust = 0.5),
+    axis.title.y = element_text(size = 20, hjust = 0.5),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    strip.text = element_text(size = 20)
+  ) +
+  scale_y_reverse() +
+  scale_x_reverse() +
+  scale_fill_manual(values = c(
+    "Tcm-like Treg" = "lightseagreen",
+    "Th17 CD4" = "navajowhite4",
+    "BATF Treg" = "firebrick",
+    "Progenitor CD4" = "royalblue4",
+    "Tfh CD4" = "plum2",
+    "Tm CD8" = "darkgoldenrod1",
+    "Trm CD8" = "darkslategrey",
+    "MAIT/NKT" = "olivedrab",
+    "Tem CD8" = "burlywood",
+    "Tex CD8" = "palegreen1"
+  ))
+
+#ggsave("plots/T_cell_UMAP.pdf", plot = p, device = cairo_pdf, width = 8, height = 6)
+
+```
+
+# ============================================================
+# Fig 1D - Differential abundance volcano plot
+# ============================================================
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(ggrepel)
+  library(Seurat)
+  library(lme4)
+  library(lmerTest)  # only needed for lmer section at the end
+})
+
+stopifnot(all(c("cell.types", "seq_folder") %in% colnames(seu@meta.data)))
+
+# ----------------------------
+# 1) Metadata: define sample_id and pathology (ONE naming convention)
+# ----------------------------
+md <- seu@meta.data |>
+  tibble::rownames_to_column("cell_id") |>
+  mutate(
+    sample_id = case_when(
+      seq_folder %in% c("P157_CIS_LT1", "P157_CIS_LT2") ~ "P157_CIS_LT_TP1",
+      seq_folder == "P157_LTCIS"                        ~ "P157_CIS_LT_TP2",
+      seq_folder %in% c("P155_Normal", "P155_NormRep")  ~ "P155_Normal",
+      TRUE                                              ~ seq_folder
+    ),
+    pathology = if_else(
+      sample_id %in% c(
+        "P149_CIS","P152_CIS","P153_CIS","P157_CIS_LT_TP1","P157_CIS_LT_TP2",
+        "P704_RIB_CIS","P158_RIB_POST_CIS","P158_RUL_CAR_CIS","P158_RUL_ORI_CIS",
+        "P159_TR_Abnorm"
+      ),
+      "CIS", "Normal"
+    ),
+    pathology = factor(pathology, levels = c("Normal", "CIS"))
+  )
+
+# Optional exclusions (as before)
+exclude_seq_folder <- c("P153_CIS", "P153_Normal", "P157_MTCIS")
+md <- md |> filter(!seq_folder %in% exclude_seq_folder)
+
+# ----------------------------
+# 2) Counts per sample x celltype, with totals and explicit zeros
+# ----------------------------
+
+# one row per sample with pathology + total cells
+sample_tbl <- md |>
+  distinct(sample_id, pathology) |>
+  # sanity: ensure pathology is unique per sample_id
+  group_by(sample_id) |>
+  summarise(pathology = dplyr::first(pathology), .groups = "drop") |>
+  left_join(md |> dplyr::count(sample_id, name = "n_total"), by = "sample_id")
+
+# all cell types you want to test
+celltype_tbl <- md |> dplyr::distinct(cell.types)
+
+# observed counts per (sample, celltype)
+counts_obs <- md |>
+  dplyr::count(sample_id, cell.types, name = "n_celltype")
+
+# complete grid with zeros
+counts_complete <- tidyr::crossing(sample_tbl, celltype_tbl) |>
+  left_join(counts_obs, by = c("sample_id", "cell.types")) |>
+  mutate(
+    n_celltype = ifelse(is.na(n_celltype), 0L, n_celltype),
+    prop = n_celltype / n_total
+  )
+
+stopifnot(all(c("sample_id","pathology","n_total","cell.types","n_celltype","prop") %in% colnames(counts_complete)))
+
+
+# ----------------------------
+# 3) Effect size: log2FC of mean proportions (CIS/Normal)
+# ----------------------------
+eps <- 1e-6
+
+mean_props <- counts_complete |>
+  group_by(pathology, cell.types) |>
+  summarise(mean_prop = mean(prop), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = pathology, values_from = mean_prop) |>
+  mutate(
+    log2FC = log2((CIS + eps) / (Normal + eps)),
+    mean_prop_CIS = CIS
+  )
+
+
+# ----------------------------
+# 4) P-values: Welch t-test on sample-level proportions (CIS vs Normal)
+# ----------------------------
+pvals <- counts_complete |>
+  group_by(cell.types) |>
+  summarise(
+    p_value = t.test(prop ~ pathology)$p.value,
+    .groups = "drop"
+  ) |>
+  mutate(fdr = p.adjust(p_value, method = "BH"))
+
+# ----------------------------
+# 5) Volcano table for plotting
+# ----------------------------
+volcano_df <- mean_props |>
+  left_join(pvals, by = "cell.types") |>
+  mutate(
+    neglog10p = -log10(p_value),
+    sig = dplyr::if_else(p_value < 0.05, "p < 0.05", "p ≥ 0.05"),
+    sig = factor(sig, levels = c("p < 0.05", "p ≥ 0.05"))
+  ) |>
+  droplevels()
+
+# ----------------------------
+# 6) Plot (larger dots; red/black legend only)
+# ----------------------------
+p <- ggplot(volcano_df, aes(x = log2FC, y = neglog10p)) +
+  geom_point(
+    aes(size = mean_prop_CIS, fill = sig, colour = sig),
+    shape = 21, alpha = 0.9, stroke = 0.8
+  ) +
+  geom_text_repel(
+    aes(label = cell.types),
+    size = 6, max.overlaps = 30, force = 20,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = c("p < 0.05" = "firebrick", "p ≥ 0.05" = "black"),
+    breaks = c("p < 0.05", "p ≥ 0.05"),
+    labels = c("p < 0.05", "p ≥ 0.05")
+  ) +
+  scale_colour_manual(
+    values = c("p < 0.05" = "black", "p ≥ 0.05" = "black"),
+    breaks = c("p < 0.05", "p ≥ 0.05"),
+    labels = c("p < 0.05", "p ≥ 0.05")
+  ) +
+  scale_size(range = c(4, 16)) +
+  guides(
+    colour = "none",                      # remove duplicate legend
+    fill = guide_legend(order = 1),
+    size = guide_legend(order = 2)
+  ) +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed", colour = "blue") +
+  geom_hline(yintercept = 1.3, linetype = "dashed", colour = "blue") +
+  theme_minimal(base_size = 18) +
+  theme(
+    panel.background = element_rect(fill = "white", colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(colour = "black", size = 18),
+    axis.title = element_text(size = 22),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  ) +
+  labs(
+    x = "Log2(FC) of mean proportion (CIS / Normal)",
+    y = "-Log10(p)",
+    fill = "Significance",
+    size = "Mean prop. in CIS"
+  )
+
+p
+
+dir.create("plots/Differential_abundance", recursive = TRUE, showWarnings = FALSE)
+ggsave("plots/Differential_abundance/volcano_CIS_vs_Normal_ttest.pdf",
+       plot = p, dpi = 320, width = 8, height = 7, device = grDevices::cairo_pdf)
+
+# ----------------------------
+# 7) Which cell types pass FDR < 0.1? (report in legend/methods)
+# ----------------------------
+volcano_df |>
+  mutate(pass_fdr_0.1 = fdr < 0.1) |>
+  arrange(p_value) |>
+  select(cell.types, log2FC, p_value, fdr, pass_fdr_0.1) |>
+  print(n = 50)
+
+```
+
+# ============================================================
+# Fig 1E+F - miloR
+# ============================================================
+```{r}
+md <- seu@meta.data %>% 
+  mutate(cell.id = row.names(.)) %>% 
+  mutate(seq_folder1 = ifelse(seq_folder %in% c("P157_CIS_LT1", "P157_CIS_LT2"), "P157_CIS_LT_TP1",
+                              ifelse(seq_folder == "P157_LTCIS", "P157_CIS_LT_TP2",
+                                     ifelse(seq_folder %in% c("P155_Normal", "P155_NormRep"), "P155_Normal", seq_folder))),
+         final_pathology = ifelse(seq_folder1 %in% c("P149_CIS", "P152_CIS", "P153_CIS", "P157_CIS_LT_TP1", "P157_CIS_LT_TP2", "P704_RIB_CIS", 
+                                                     "P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS", "P159_TR_Abnorm"), 
+                                  "CIS", "Normal"))
+
+seu@meta.data <- md
+
+cells_to_keep <- seu@meta.data %>% 
+  filter(!seq_folder %in% c("P153_CIS", "P153_Normal", "P157_MTCIS")) %>%      # samples to be removed
+  pull(cells)
+
+# subset seurat object to only include cells which are from samples we want for downstream analysis
+seu1 <- subset(seu, cells = cells_to_keep)
+rm(seu)
+
+# create sce & milo objects
+DefaultAssay(seu1) <- "integrated"
+sce <- as.SingleCellExperiment(seu1)
+seu.t_milo <- Milo(sce)
+rm(sce)
+
+# now continue with milo analysis
+set.seed(1)
+seu.t_milo <- buildGraph(seu.t_milo, k = 30, d = 25, reduced.dim = "PCA")
+
+set.seed(1)
+seu.t_milo <- makeNhoods(seu.t_milo, prop = 1, k = 30, d=25, refined = TRUE, reduced_dims = "PCA")
+
+# first try running at sample level, instead of joining by patient & merging all 157 together, join by seq_folder1 which has the individual sample ids
+colData(seu.t_milo)$sample <- paste0(colData(seu.t_milo)$seq_folder1, "_", colData(seu.t_milo)$final_pathology)
+seu.t_milo <- countCells(seu.t_milo, meta.data = as.data.frame(colData(seu.t_milo)), sample="sample")
+
+design <- data.frame(colData(seu.t_milo))[,c("seq_folder1", "final_pathology")]
+## Convert info from integers to factor
+design$final_pathology <- as.factor(design$final_pathology) 
+
+# simplify data frame to only distinct condition combinations
+design <- distinct(design)
+rownames(design) <- paste0(design$seq_folder1, "_", design$final_pathology)
+
+set.seed(1)
+seu.t_milo <- calcNhoodDistance(seu.t_milo, d=25, reduced.dim = "PCA")
+
+# now work with differential abundance output 
+da_results <- testNhoods(seu.t_milo, design = ~ final_pathology, design.df = design)
+da_results <- annotateNhoods(seu.t_milo, da_results, coldata_col = "cell.types")
+da_results <- annotateNhoods(seu.t_milo, da_results, coldata_col = "final_pathology")
+
+# for arrow annotation, see which condition more neighbourhoods are expressed in
+# seriously rinsing dplyr piping here lol
+direction <- da_results %>% 
+  mutate(enriched = ifelse(logFC < 0 & SpatialFDR < 0.1, "CIS",
+                           ifelse(logFC > 0 & SpatialFDR < 0.1, "Normal", NA))) %>% 
+  tidyr::drop_na("enriched")
+
+if(length(unique(da_results$enriched)) > 1) {
+  direction <- direction %>% 
+    group_by(cell.types, enriched) %>% 
+    summarise(n=n()) %>% 
+    reshape2::dcast(cell.types ~ enriched, value.var = "n") %>% 
+    mutate(
+      CIS = ifelse(is.na(CIS), 0, CIS),
+      Normal = ifelse(is.na(Normal), 0, Normal),
+      enriched = ifelse(CIS > Normal, "CIS", "Normal")
+    ) %>% 
+    mutate(
+      start = ifelse(enriched == "CIS", 1, 0),
+      end = ifelse(enriched == "CIS", 0, 1),
+      direction = ifelse(enriched == "CIS", "Down", "Up")
+    ) %>% 
+    select(-c(CIS, Normal)) 
+} else {
+  direction <- direction %>% 
+    group_by(cell.types, enriched) %>% 
+    summarise(n=n()) %>% 
+    reshape2::dcast(cell.types ~ enriched, value.var = "n") %>% 
+    mutate(
+      CIS = ifelse(is.na(CIS), 0, CIS),
+      enriched = "CIS"
+    ) %>% 
+    mutate(
+      start = ifelse(enriched == "CIS", 1, 0),
+      end = ifelse(enriched == "CIS", 0, 1),
+      direction = ifelse(enriched == "CIS", "Down", "Up")
+    ) %>% 
+    select(-CIS) 
+}
+
+if(length(setdiff(da_results$cell.types, direction$cell.types)) > 0) {
+  direction <- direction %>%
+    rbind(
+      data.frame(
+        cell.types = c(setdiff(da_results$cell.types, direction$cell.types)),
+        enriched = NA,
+        start = NA,
+        end = NA,
+        direction = NA
+      )
+    )
+} else {
+  direction <- direction
+}
+
+da_results1 <- da_results %>% 
+  mutate(
+    new_fc = -logFC,
+    cell.types = factor(cell.types, levels = c("BATF Treg", "Tcm-like Treg", "Tfh CD4", "Th17 CD4", "Progenitor CD4",
+                                               "Tex CD8", "GZMK+ Tem CD8", "Trm CD8", "UTC", "Activated Tem CD8")))
+
+# now leverage neighbourhood size to 
+# create index of neighbourhoods
+nhood_index_list <- seu.t_milo@nhoodIndex
+# Convert the list into a data frame
+nhood_index_df <- do.call(rbind, lapply(seq_along(nhood_index_list), function(i) {
+  data.frame(Index = nhood_index_list[[i]], Nhood = i)
+}))
+
+# access neighbourhood cells
+neighborhoods <- nhoods(seu.t_milo)
+# Calculate the size of each neighborhood by summing each column
+neighborhood_sizes <- as.data.frame(Matrix::colSums(neighborhoods)) %>% 
+  mutate(Index = row.names(.),
+         Index = as.numeric(Index)) %>% 
+  dplyr::rename(size_nhood = `Matrix::colSums(neighborhoods)`) %>% 
+  left_join(nhood_index_df,  by = "Index")
+
+# join with differential abundance for dot sizing
+da_results1 <- left_join(da_results1, neighborhood_sizes, by = "Nhood")
+
+pid.bee <- ggplot(mapping=aes(x=cell.types, y=new_fc, size=size_nhood)) +
+  geom_quasirandom(data=da_results1[da_results1$SpatialFDR > 0.1,], 
+                   alpha=0.8, fill='grey50', pch = 21, color = "black") + 
+  geom_quasirandom(data=da_results1[da_results1$SpatialFDR <= 0.1 & da_results1$new_fc < 0,], 
+                   #aes(fill=new_fc), 
+                   fill = "dodgerblue3", pch = 21, color = "black", alpha=0.8) + 
+  geom_quasirandom(data=da_results1[da_results1$SpatialFDR <= 0.1 & da_results1$new_fc > 0,], 
+                   #aes(fill=new_fc), 
+                   fill = "firebrick", pch = 21, color = "black", alpha=0.8) + 
+  coord_flip() +
+  facet_grid(cell.types~., scales="free_y", space="free") +
+  #scale_fill_gradient2(low='dodgerblue3', mid='grey80', high='firebrick',midpoint=0) +
+  #scale_y_continuous(limits=c(-lim.val-eps, lim.val+eps)) +
+  scale_radius(range = c(1,15)) +
+  theme_bw() +
+  labs(y=bquote(Log[2](FC))) +
+  theme(strip.text.y =  element_text(angle=0, colour='black', size=24, hjust = 0),
+        strip.background=element_rect(colour='white', fill='white'),
+        axis.title.y = element_blank(), axis.text.y = element_blank(), 
+        axis.text.x=element_text(size=24, color = "black"), axis.title.x=element_text(size=30, color = "black"),
+        axis.ticks.y = element_blank()) +
+  guides(fill=FALSE)
+
+pid.bee
+
+pid.arrow <- ggplot(direction %>%  mutate(cell.types = factor(cell.types, levels = c("BATF Treg", "Tcm-like Treg", "Tfh CD4", "Th17 CD4", "Progenitor CD4","Tex CD8", "Tem CD8","Trm CD8", "Tk CD8", "Tm CD8"))), 
+                    aes(x=cell.types, y=end, xend=cell.types, yend=start, colour=direction)) +
+  geom_segment() +
+  geom_segment(size=1.2, arrow=arrow(length=unit(0.1, "npc"), type="closed")) +
+  coord_flip() +
+  theme_bw() +
+  scale_colour_manual(values=rev(c('firebrick', 'dodgerblue3')), breaks=c("Up", "Down"),
+                      labels=c("Enriched in Normal", "Enriched in CIS")
+  ) +
+  guides(colour=guide_legend(ncol=1, title="Human PID")) +
+  facet_grid(cell.types~., scales="free_y", space="free") +
+  theme(strip.text.y = element_blank(), strip.text.x = element_text(angle=90),
+        plot.margin = unit(c(0,0,0,0), "cm"), panel.grid = element_blank(),
+        axis.title.x = element_blank(), axis.text.x = element_blank(), 
+        axis.ticks = element_blank(), axis.text.y=element_blank(),
+        axis.title.y=element_blank(), 
+        legend.text=element_text(size=20), legend.title=element_blank(),
+        legend.position = "bottom")
+pid.arrow
+
+(pid.arrow + pid.bee +
+    plot_layout(widths=c(1, 8), guides="collect") & theme(legend.position="top", legend.justification=0))
+
+#ggsave("plots/UMAP_milo/T_cell_miloR.pdf", dpi=320, width = 10, height = 10)
+
+
+celltype_order <- c(
+  "BATF Treg", "Tcm-like Treg", "Tfh CD4", "Th17 CD4", "Progenitor CD4",
+  "Tex CD8", "GZMK+ Tem CD8", "Trm CD8", "UTC", "Activated Tem CD8"
+)
+
+hg_nhood_summary <- da_results1 |>
+  mutate(
+    cell.types = factor(cell.types, levels = celltype_order),
+    hg_enriched_sig = SpatialFDR <= 0.1 & new_fc > 0
+  ) |>
+  group_by(cell.types) |>
+  summarise(
+    yy_total_nhoods = n(),
+    xx_hg_enriched_sig = sum(hg_enriched_sig, na.rm = TRUE),
+    prop_hg_enriched_sig = xx_hg_enriched_sig / yy_total_nhoods,
+    zz_median_log2FC = median(new_fc[hg_enriched_sig], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(prop_hg_enriched_sig))
+
+hg_nhood_summary
+
+
+
+# and for the milo neighbourhood plot
+seu.t_milo <- buildNhoodGraph(seu.t_milo)
+
+# check umap dimensions for wct object is different to the ones of t cells, and add an additional reduced dim object so network plot can match UMAP
+umap_dims <- reducedDims(seu.t_milo)$UMAP %>% 
+  as.data.frame() %>% 
+  mutate(cell.id = row.names(.)) 
+row.names(umap_dims) <- umap_dims$cell.id
+umap_dims <- umap_dims[,-3]      # remove cell.ids
+umap_dims <- as.matrix(umap_dims)
+
+reducedDims(seu.t_milo)$UMAP_update <- umap_dims
+
+
+plotNhoodGraphDA(seu.t_milo, da_results1, layout="UMAP_update",alpha=0.1, node_stroke = 0.3, res_column = "new_fc") + 
+  scale_radius(range = c(1,20)) +
+  scale_y_reverse() +
+  scale_x_reverse() +
+  scale_fill_gradientn(colors = c("dodgerblue3", "white", "firebrick"), limits = c(-6.4, 6.4))
+
+#ggsave("T_cell_milo_network_plot.pdf", dpi=320, width = 12, height = 8)
+```
+
+
+# ============================================================
+# Fig 1G - pseudobulk DGE volcano plot
+# ============================================================
+```{r}
+library(Seurat)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(purrr)
+library(SingleCellExperiment)
+library(glmGamPoi)
+library(edgeR)
+library(limma)
+library(ggplot2)
+library(ggrepel)
+library(SummarizedExperiment)
+library(pheatmap)
+library(grid)
+
+# ============================================================
+# 0. USER SETTINGS
+# ============================================================
+seu_path <- "/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/newTcells_newPID_version1-TS260825.rds"
+output_dir <- "/Users/Petros/Downloads/"
+
+# Gene Lists
+target_genes_prog <- c("IRF4", "BATF", "REL", "IL2RA", "CTLA4", "IKZF2", "GATA3", "TNFRSF4", "FOXP3")
+
+genes_of_interest <- c(
+  "FOXP3", "IL2RA", "IKZF2", "CTLA4", "TIGIT", "CCR8", "LAYN",
+  "BATF", "RTKN2", "TNFRSF18", "TNFRSF4", "ENTPD1", "CD83",
+  "NDFIP2", "TOX2", "CSF1", "HPGD", "ACP5", "BTN2A2", "SGPP1",
+  "LTBP3", "PARVB", "TCF7", "S1PR1", "NR4A1", "IL7R", "ICOS",
+  "PDCD1", "CXCR6", "TNFRSF9"
+)
+
+exclude_pattern <- "^(AC[0-9]|AL[0-9]|HIST|TRA|TRB|IGH|IGK|IGL|LINC|HBA|HBB|HBD|HBE1|HBG|HBM|HBQ1|HBZ)"
+
+# Cluster Patterns
+broad_cd4_pattern <- "CD4|Treg|Prolif"
+treg_pattern <- "Treg"
+prog_pattern <- "Progenitor|Prog"
+
+# ============================================================
+# 1. HELPER FUNCTIONS
+# ============================================================
+make_pb <- function(seu_obj, cell_pattern, min_cells_per_pb = 0) {
+  cells_use <- colnames(seu_obj)[grepl(cell_pattern, seu_obj$cell.types)]
+  if (length(cells_use) == 0) return(NULL)
+  
+  seu_sub <- subset(seu_obj, cells = cells_use)
+  metadata <- seu_sub@meta.data |> as.data.frame()
+  
+  counts <- GetAssayData(seu_sub, layer = "counts")
+  sce <- SingleCellExperiment(assays = list(counts = counts), colData = S4Vectors::DataFrame(metadata))
+  
+  pb <- glmGamPoi::pseudobulk(sce, group_by = vars(patient, final_pathology))
+  pb_meta <- as.data.frame(SummarizedExperiment::colData(pb))
+  
+  cell_meta <- metadata |>
+    dplyr::group_by(patient, final_pathology) |>
+    dplyr::summarise(n_cells = dplyr::n(), .groups = "drop")
+  
+  pb_meta <- pb_meta |>
+    dplyr::left_join(cell_meta, by = c("patient", "final_pathology")) |>
+    dplyr::mutate(
+      patient = factor(patient),
+      final_pathology = factor(final_pathology, levels = c("Normal", "CIS"))
+    ) |> droplevels()
+  
+  rownames(pb_meta) <- colnames(pb)
+  pb_counts <- SummarizedExperiment::assay(pb, "counts")[, rownames(pb_meta), drop = FALSE]
+  
+  list(pb_counts = pb_counts, pb_meta = pb_meta)
+}
+
+get_matched_only <- function(pb_counts, pb_meta) {
+  matched_patients <- pb_meta |>
+    dplyr::distinct(patient, final_pathology) |>
+    dplyr::mutate(present = 1L) |>
+    tidyr::pivot_wider(names_from = final_pathology, values_from = present, values_fill = 0) |>
+    dplyr::filter(Normal == 1, CIS == 1) |>
+    dplyr::pull(patient) |> as.character()
+  
+  pb_meta2 <- pb_meta |> dplyr::filter(patient %in% matched_patients) |> droplevels()
+  pb_counts2 <- pb_counts[, rownames(pb_meta2), drop = FALSE]
+  list(pb_counts = pb_counts2, pb_meta = pb_meta2)
+}
+
+# The "Defensible" Modeling Function
+run_limma_voom_defensible <- function(pb_counts, pb_meta, force_keep_genes = NULL) {
+  matched <- get_matched_only(pb_counts, pb_meta)
+  counts_use <- matched$pb_counts
+  meta_use <- matched$pb_meta
+  
+  dge <- edgeR::DGEList(counts = counts_use)
+  design <- stats::model.matrix(~ patient + final_pathology, data = meta_use)
+  
+  # Logic: Keep genes that pass standard filtering OR are in our target list
+  keep_strict <- edgeR::filterByExpr(dge, design = design)
+  keep_force <- rownames(dge) %in% force_keep_genes
+  dge <- dge[keep_strict | keep_force, , keep.lib.sizes = FALSE]
+  dge <- dge[!grepl(exclude_pattern, rownames(dge)), , keep.lib.sizes = FALSE]
+  
+  dge <- edgeR::calcNormFactors(dge)
+  v <- limma::voom(dge, design, plot = FALSE)
+  fit <- limma::lmFit(v, design, weights = meta_use$n_cells)
+  fit <- limma::eBayes(fit, robust = TRUE)
+  
+  res <- limma::topTable(fit, coef = "final_pathologyCIS", number = Inf) |>
+    tibble::rownames_to_column("gene") |>
+    dplyr::rename(PValue = P.Value, FDR = adj.P.Val)
+  
+  return(list(res = res, v = v, meta = meta_use))
+}
+
+# ============================================================
+# 2. LOAD & DECONTAMINATE
+# ============================================================
+seu <- readRDS(seu_path)
+DefaultAssay(seu) <- "RNA"
+
+# Metadata Cleaning
+seu@meta.data <- seu@meta.data |>
+  dplyr::mutate(
+    final_pathology = dplyr::case_when(
+      seq_folder %in% c("P149_CIS", "P152_CIS", "P153_CIS", "P704_RIB_CIS", 
+                        "P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS", "P159_TR_Abnorm") | 
+        grepl("CIS", seq_folder) ~ "CIS",
+      TRUE ~ "Normal"
+    )
+  )
+
+cells_to_keep <- seu@meta.data |>
+  dplyr::filter(!seq_folder %in% c("P153_CIS", "P153_Normal", "P157_MTCIS")) |>
+  dplyr::pull(cells)
+seu1 <- subset(seu, cells = cells_to_keep)
+
+# DecontX
+library(celda)
+sce <- as.SingleCellExperiment(seu1, assay = "RNA")
+sce <- decontX(sce, z = seu1$cell.types)
+seu1[["decontX"]] <- CreateAssayObject(counts = round(decontXcounts(sce)))
+DefaultAssay(seu1) <- "decontX"
+rm(seu, sce)
+
+# ============================================================
+# 3. MAIN ANALYSES (BROAD CD4)
+# ============================================================
+pb_broad <- make_pb(seu1, broad_cd4_pattern)
+fit_broad <- run_limma_voom_defensible(pb_broad$pb_counts, pb_broad$pb_meta, genes_of_interest)
+
+# ============================================================
+# 7. ADVANCED VOLCANO PLOT (BROAD CD4) with Stringency Gap
+# ============================================================
+cat("\nGenerating Advanced Volcano Plot for Broad CD4 cells...\n")
+
+# Step 1: Calculate the P-value corresponding to FDR = 0.05
+# Find the highest p-value that still satisfies FDR <= 0.05
+fdr_05_hits <- fit_broad$res |> dplyr::filter(FDR <= 0.05)
+if(nrow(fdr_05_hits) > 0) {
+  p_val_fdr_05 <- max(fdr_05_hits$PValue, na.rm = TRUE)
+  # Log it just for reference
+  cat(paste0("Calculated P-value cutoff for FDR=0.05 is: p = ", round(p_val_fdr_05, 5), "\n"))
+} else {
+  p_val_fdr_05 <- NA
+  cat("Warning: No genes passed FDR < 0.05. The FDR line will not be plotted.\n")
+}
+
+# Setting a logFC threshold variable for clarity (consistent with previous plots)
+fc_cutoff <- 0.5 
+
+# Step 2: Complex Data Prep - Defining standard vs gap significance
+volcano_data <- fit_broad$res |>
+  dplyr::mutate(
+    # Core logic: classify by direction AND stringency level
+    sig = dplyr::case_when(
+      # Case A: Strict Significance (FDR < 0.05) - Fully Colored
+      FDR < 0.05 & logFC > fc_cutoff  ~ "Up (FDR < 0.05)",
+      FDR < 0.05 & logFC < -fc_cutoff ~ "Down (FDR < 0.05)",
+      
+      # Case B: The "Gap" (P < 0.05, but FDR >= 0.05) - Lighter Shades
+      PValue < 0.05 & FDR >= 0.05 & logFC > fc_cutoff  ~ "Up (p < 0.05)",
+      PValue < 0.05 & FDR >= 0.05 & logFC < -fc_cutoff ~ "Down (p < 0.05)",
+      
+      # Case C: Non-significant
+      TRUE ~ "Non-significant"
+    ),
+    
+    # Labeling Logic (keeping previous: top hits or genes of interest)
+    label_gene = ifelse(gene %in% genes_of_interest | (FDR < 0.001 & abs(logFC) > 1.5), gene, NA)
+  ) |>
+  # Drop unused categories to keep legend clean
+  droplevels()
+
+# Step 3: Create Plot
+p_volcano_adv <- ggplot(volcano_data, aes(x = logFC, y = -log10(PValue), color = sig)) +
+  # Reference lines (Vertical logFC boundaries)
+  geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "gray80") +
+  
+  # --- Horizontal Lines ---
+  # 1. P = 0.05 line (Lower, typically gray)
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray60") +
+  annotate("text", x = 3.5, y = -log10(0.05), label = "p = 0.05 (Nominal)", color = "gray40", vjust = -0.5, size = 3) +
+  
+  # 2. FDR = 0.05 line (Higher, conditional on hits existing)
+  { if(!is.na(p_val_fdr_05)) geom_hline(yintercept = -log10(p_val_fdr_05), linetype = "solid", color = "black", linewidth = 0.4) } +
+  { if(!is.na(p_val_fdr_05)) annotate("text", x = 3.5, y = -log10(p_val_fdr_05), label = "FDR = 0.05 (Adjusted)", color = "black", vjust = -0.5, size = 3, fontface = "bold") } +
+  
+  # Points
+  geom_point(alpha = 0.7, size = 1.5) +
+  
+  # Custom Manual Color Palette
+  scale_color_manual(
+    # Set standard colors and their lighter equivalents
+    values = c(
+      "Up (FDR < 0.05)"     = "firebrick3",      # Pure red (above FDR)
+      "Down (FDR < 0.05)"   = "dodgerblue3",     # Pure blue (above FDR)
+      "Up (Nominal Gap)"    = "indianred1",      # Lighter red (between P and FDR)
+      "Down (Nominal Gap)"  = "lightskyblue",    # Lighter blue (between P and FDR)
+      "Non-significant"     = "gray90"           # Lightest gray for non-DE
+    )
+  ) +
+  
+  # Gene Labels with Repel
+  geom_text_repel(
+    aes(label = label_gene),
+    size = 3.2,
+    max.overlaps = 30,
+    segment.color = "grey50",
+    fontface = "italic",
+    box.padding = 0.4
+  ) +
+  
+  # Formatting
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "log2 Fold Change",
+    y = "-log10(P-value)"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0.01, 0.1))) + # Extend top slightly
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "right",
+    legend.title = element_blank(), # Clean legend title
+    panel.grid.minor = element_blank()
+  )
+
+# Step 4: Export Plot
+volcano_output_path <- paste0(output_dir, "broad_cd4_volcano_gap_colors.pdf")
+ggsave(volcano_output_path, p_volcano_adv, width = 9, height = 7)
+
+print(p_volcano_adv)
+
+# ============================================================
+# 4. DEFENSIBLE PROGENITOR ANALYSIS
+# ============================================================
+cat("\n--- Running Defensible Progenitor DGE ---\n")
+pb_prog <- make_pb(seu1, prog_pattern)
+fit_prog <- run_limma_voom_defensible(pb_prog$pb_counts, pb_prog$pb_meta, target_genes_prog)
+
+# 1. Prepare Table for Console
+prog_results_table <- fit_prog$res |>
+  dplyr::filter(gene %in% target_genes_prog) |>
+  dplyr::select(gene, logFC, PValue, FDR) |>
+  dplyr::arrange(desc(logFC))
+
+cat("\n========================================================\n")
+cat("   PROGENITOR CD4: TARGET GENE STATS (CIS vs NORMAL)     \n")
+cat("========================================================\n")
+print.data.frame(prog_results_table, row.names = FALSE, digits = 4)
+cat("========================================================\n")
+
+# ============================================================
+# 5. HEATMAP GENERATION (Log2FC COLORING)
+# ============================================================
+cat("\nGenerating Heatmap colored by Model Log2FC...\n")
+
+# Create matrix from model results
+heat_mat <- as.matrix(prog_results_table$logFC)
+rownames(heat_mat) <- prog_results_table$gene
+colnames(heat_mat) <- "Log2FC (High-grade vs Normal)"
+
+# Create p-value labels
+p_text <- matrix("", nrow = nrow(heat_mat), ncol = 1)
+for(i in 1:nrow(prog_results_table)) {
+  p_val <- prog_results_table$PValue[i]
+  p_formatted <- format.pval(p_val, digits = 2, eps = 0.001)
+  p_text[i, 1] <- paste0("p = ", p_formatted)
+}
+
+# Colors and Scale
+max_val <- max(abs(heat_mat), na.rm = TRUE)
+if(max_val < 1) max_val <- 1
+breaks <- seq(-max_val, max_val, length.out = 51)
+my_colors <- colorRampPalette(c("dodgerblue3", "white", "firebrick3"))(50)
+
+# Generate Heatmap
+p_final <- pheatmap(
+  mat = heat_mat,
+  color = my_colors,
+  breaks = breaks,
+  cluster_cols = FALSE,
+  cluster_rows = FALSE,
+  display_numbers = p_text,
+  fontsize_number = 9,
+  number_color = "black",
+  show_colnames = TRUE,
+  angle_col = 0,
+  main = "Progenitor CD4: Differential Expression (Defensible Model)",
+  cellwidth = 150,
+  cellheight = 30,
+  silent = TRUE
+)
+
+# Export and Show
+output_path <- paste0(output_dir, "progenitor_cd4_defensible_logFC.pdf")
+ggsave(output_path, p_final, width = 6, height = 8)
+
+grid.newpage()
+grid.draw(p_final$gtable)
+
+cat(paste0("\nAnalysis complete. Results saved to: ", output_path, "\n"))
+```
+
+# ============================================================
+# Fig 1H - bulk Galon
+# ============================================================
+```{r}
+library(dplyr)
+
+# load in metadata and count matrices per patient
+galon <- load("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/RDS/galon.data_BulkRNA-seq_phenoAndBulk.RData")
+mat <- as.matrix(jg.data)
+
+id_mat <- read.csv("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/galon_sample_patient_matrix.csv")
+jg.pheno <- left_join(jg.pheno, id_mat, by = "ID")
+
+pb_gene_sigs <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell.rds")
+pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
+
+gene.sig.list.pb <- vector("list", length(pb_gene_sigs))
+names(gene.sig.list.pb) <- names(pb_gene_sigs)
+
+for (i in seq_along(pb_gene_sigs)) {
+  
+  df <- pb_gene_sigs[[i]] %>%
+    as.data.frame() %>%                                   # force plain data.frame
+    dplyr::filter(logFC > 0.25, PValue < 0.05) %>%
+    dplyr::filter(!grepl("^AC|CHAIN|^HIST|^HB|^TRA|^TRB|^IGH|^IGL|^IGK|^LINC", genes)) %>%
+    dplyr::arrange(dplyr::desc(logFC)) %>%
+    dplyr::rename(X = genes)
+  
+  df <- df[seq_len(min(300, nrow(df))), , drop = FALSE]    # base slice
+  
+  gene.sig.list.pb[[i]] <- df
+}
+
+gene.sig.list.pb
+#write.csv(gene.sig.list.pb$`BATF Treg`, "Suppplementary_Table2.csv")
+
+
+patterns <- c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")
+replacements <- c("ProgCD4","Th17", "BATFTreg","TfhCD4", "TcmTreg")
+
+for (i in seq_along(patterns)) {
+  names(gene.sig.list.pb) <- gsub(patterns[i], replacements[i], names(gene.sig.list.pb))
+}
+
+# now run through the galon data
+gene.sig.list <- list()
+
+for(i in 1:length(gene.sig.list.pb)) {
+  if(class(gene.sig.list.pb[[i]]) == "data.frame") {
+    genes <- gene.sig.list.pb[[i]]$X
+  } else {
+    genes <- gene.sig.list.pb[[i]]
+  }
+  genes <- genes[genes %in% rownames(mat)]
+  gene.sig <- as.data.frame(t(mat[rownames(mat) %in% genes,]))
+  
+  current_cell_type <- names(gene.sig.list.pb)[i]
+  
+  gene.sig.list[[current_cell_type]] <- gene.sig
+}
+
+gene.sig.list <- c(gene.sig.list, list(
+  cd8 = as.data.frame(t(mat[rownames(mat) %in% c("CD8A", "CD8B", "CD3D", "CD3G", "CD3E"),])),
+  cd4 = as.data.frame(t(mat[rownames(mat) %in% c("CD4", "CD3D", "CD3G", "CD3E"),]))
+))
+
+gene.sig.output <- list()
+
+for (i in seq_along(gene.sig.list)) {
+  
+  df <- gene.sig.list[[i]] %>%
+    mutate(file_name = row.names(.))
+  
+  current_element <- names(gene.sig.list)[i]
+  
+  output <- data.frame(
+    file_name = unique(df$file_name),
+    Expr = NA_real_
+  )
+  
+  for (j in seq_along(unique(df$file_name))) {
+    
+    dat <- t(df[j, 1:(ncol(df) - 1), drop = FALSE])
+    colnames(dat) <- "Expr"
+    dat <- as.data.frame(dat)
+    
+    dat1 <- dat$Expr[dat$Expr > 0]
+    
+    output[output$file_name == unique(df$file_name)[j], "Expr"] <- exp(mean(log(dat1)))
+  }
+  
+  output <- output %>%
+    mutate(
+      !!paste0(current_element, "_cat") :=
+        factor(ifelse(Expr > median(Expr, na.rm = TRUE), "high", "low"),
+               levels = c("low", "high")),
+      !!paste0(current_element, "_cat_uq") :=
+        factor(ifelse(Expr > as.numeric(quantile(Expr, probs = 0.75, na.rm = TRUE)), "high", "low"),
+               levels = c("low", "high"))
+    ) %>%
+    rename_with(~ current_element, .cols = "Expr")  # <-- dynamic rename
+  
+  gene.sig.output[[current_element]] <- output
+}
+
+
+gene.sig.df <- purrr::reduce(gene.sig.output, full_join, by = "file_name") %>% 
+  dplyr::left_join(jg.pheno %>% 
+                     dplyr::select(c(colname, Group2, patient_id)) %>% 
+                     dplyr::rename(file_name = colname, tissue_type = Group2), 
+            by = "file_name") %>% 
+  mutate(tissue_type = ifelse(tissue_type == "SCC", "LUSC", tissue_type),
+         tissue_type = factor(tissue_type, levels = c("Normal", "Low grade", "High grade", "LUSC")))
+
+# calculate the mean & join with a line
+lp <- gene.sig.df %>% 
+  group_by(tissue_type) %>% 
+  summarise(mean = mean(BATFTreg)) %>% 
+  left_join(
+    gene.sig.df %>% 
+      plyr::ddply("tissue_type", summarise, se = plotrix::std.error(BATFTreg)),
+    by = "tissue_type"
+  ) %>% 
+  mutate(
+    ymin = mean-se,
+    ymax = mean+se
+  )
+# calculate the mean value per patient 
+ptm <- gene.sig.df %>% 
+  group_by(tissue_type, patient_id) %>% 
+  summarise(mean = mean(BATFTreg)) 
+
+library(ggbeeswarm)
+
+combs <- combn(unique(as.character(gene.sig.df$tissue_type)), 2, simplify = FALSE)
+
+ggplot(data=gene.sig.df, mapping=aes(x=tissue_type, y=BATFTreg)) +
+  geom_beeswarm(aes(fill=tissue_type,  y=BATFTreg), pch=21, size=4, cex=2, alpha = 0.5) +
+  #geom_boxplot(aes(y=BATFTreg), color = "black", alpha = 0.4, outlier.shape = NA) +
+  geom_line(data=lp, aes(group = 1, y=mean), color = "black", size = 1) +
+  geom_errorbar(data=lp, aes(ymin=ymin, ymax=ymax, y=mean), color="firebrick", stat="identity", width=0.1, size = 1) +
+  geom_point(data=lp, aes(y=mean), fill="firebrick", size=8, pch=21, alpha=0.8) +
+  theme_minimal() + 
+  theme(
+    #axis.title.x = element_text(size = 26, hjust = 0.5),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 20, hjust = 0.5),
+    axis.text.x = element_text(size =16, angle=45, hjust=1, color="black"),
+    axis.text.y = element_text(size =16, color="black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    #plot.margin = margin(80, 310, 80, 310),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 14),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black"),
+    axis.line = element_line(color = "black")
+  ) +
+  scale_fill_manual(values = c("forestgreen", "dodgerblue3", "firebrick", "rosybrown4")) +
+  labs(
+    y="Normalised BATF+ Treg signature score"
+  )
+ggsave("~/plots/Differential_abundance/galon_validation_top300_TScriteria_BATF_sig_lp_PB_nosig_logtransform.pdf", dpi=320, width=5, height=7)
+
+library(emmeans)
+fit <- lmer(BATFTreg ~ tissue_type + (1 | patient_id), data = gene.sig.df)
+emm_res <- emmeans(fit, pairwise ~ tissue_type, adjust = "BH")
+contr_df <- as.data.frame(emm_res$contrasts) |>
+  mutate(
+    p_value_long = format(p.value, digits = 6, scientific = FALSE),
+    p_value_sci  = format(p.value, digits = 6, scientific = TRUE)
+  )
+contr_df
+
+```
+
+# ============================================================
+# Fig 1I
+# ============================================================
+```{r}
+library(tidyverse)
+library(fgsea)
+library(ggplot2)
+
+# ------------------------------------------------------------
+# 1) Load inputs
+# ------------------------------------------------------------
+gl_list <- readRDS("E:/Sam Gamble/PID/Code_revisions/Jan_2025/RDS/gl_list_treg_signatures.rds")
+pb_gene_sigs <- readRDS("E:/Sam Gamble/PID/Code_revisions/July_2025/RDS/pb_gene_sigs_Tcell_260825.rds")
+
+# ------------------------------------------------------------
+# 2) Extract BATF Treg pseudobulk DE table
+#    Rank genes by signed LR
+# ------------------------------------------------------------
+batf_pb <- pb_gene_sigs[["BATF Treg"]] |>
+  as_tibble() |>
+  filter(
+    !is.na(genes),
+    !is.na(logFC),
+    !is.na(LR),
+    !is.na(PValue),
+    !grepl("^(AC[0-9]|AL[0-9]|HIST|TRA|TRB|IGH|IGK|IGL|LINC|HBA|HBB|HBD|HBE1|HBG|HBM|HBQ1|HBZ)", genes)
+  ) |>
+  mutate(
+    rank_metric = sign(logFC) * LR,
+    tie_break_1 = abs(logFC),
+    tie_break_2 = logCPM
+  )
+
+# ------------------------------------------------------------
+# 3) Collapse duplicated gene symbols explicitly
+#    Keep the entry with the largest absolute rank_metric
+#    and then strongest abs(logFC), then highest logCPM
+# ------------------------------------------------------------
+batf_pb_ranked <- batf_pb |>
+  group_by(genes) |>
+  arrange(desc(abs(rank_metric)), desc(tie_break_1), desc(tie_break_2), .by_group = TRUE) |>
+  slice(1) |>
+  ungroup() |>
+  mutate(
+    rank_metric_final = rank_metric +
+      tie_break_1 * 1e-9 +
+      tie_break_2 * 1e-12 * sign(rank_metric)
+  ) |>
+  arrange(desc(rank_metric_final))
+
+# ------------------------------------------------------------
+# 4) Build preranked named vector for fgsea
+# ------------------------------------------------------------
+geneList <- batf_pb_ranked$rank_metric_final
+names(geneList) <- batf_pb_ranked$genes
+geneList <- sort(geneList, decreasing = TRUE)
+
+# Optional sanity checks
+stopifnot(is.numeric(geneList))
+stopifnot(!is.null(names(geneList)))
+stopifnot(!any(is.na(geneList)))
+stopifnot(!any(duplicated(names(geneList))))
+
+# ------------------------------------------------------------
+# 5) Check overlap between pathways and ranked universe
+# ------------------------------------------------------------
+overlap_df <- tibble(
+  pathway = names(gl_list),
+  size = lengths(gl_list),
+  overlap = purrr::map_int(gl_list, ~ sum(.x %in% names(geneList)))
+) |>
+  arrange(overlap)
+
+print(overlap_df)
+
+# ------------------------------------------------------------
+# 6) Run fgsea
+#    nproc = 1 avoids the serialization warnings
+# ------------------------------------------------------------
+set.seed(1)
+
+res <- fgseaMultilevel(
+  pathways = gl_list,
+  stats = geneList,
+  minSize = 10,
+  maxSize = 500,
+  nproc = 1
+) |>
+  as_tibble()
+
+# ------------------------------------------------------------
+# 7) Tidy results for plotting/export
+# ------------------------------------------------------------
+gsea_res <- res |>
+  left_join(overlap_df, by = "pathway") |>
+  mutate(
+    sig_col = ifelse(padj < 0.05, "padj < 0.05", "padj ≥ 0.05"),
+    sig_col = factor(sig_col, levels = c("padj < 0.05", "padj ≥ 0.05")),
+    leadingEdgeSize = lengths(leadingEdge)
+  ) |>
+  arrange(desc(NES))
+
+print(gsea_res)
+
+# ------------------------------------------------------------
+# 8) Plot
+# ------------------------------------------------------------
+library(scales)
+
+plot_df2 <- gsea_res |>
+  arrange(desc(NES)) |>
+  mutate(
+    neglog10_padj = -log10(pmax(padj, 1e-300)),
+    fill_plot = ifelse(padj < 0.05, neglog10_padj, 0),
+    pathway = factor(pathway, levels = rev(pathway))
+  )
+
+sig_min <- min(plot_df2$neglog10_padj[plot_df2$padj < 0.05], na.rm = TRUE)
+sig_max <- max(plot_df2$neglog10_padj[plot_df2$padj < 0.05], na.rm = TRUE)
+
+p <- ggplot(plot_df2, aes(x = NES, y = pathway, size = leadingEdgeSize, fill = fill_plot)) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey40", linewidth = 0.4) +
+  geom_point(shape = 21, colour = "black", stroke = 0.4) +
+  scale_fill_gradientn(
+    colours = c("gray80", "mistyrose", "maroon4"),
+    values = rescale(c(0, sig_min, sig_max)),
+    limits = c(0, sig_max),
+    name = expression(-log[10]("adjusted p"))
+  ) +
+  scale_size(range = c(1.5, 10)) +
+  labs(
+    x = "NES",
+    y = NULL,
+    size = "Leading-edge\ngenes"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.background = element_rect(colour = "black", fill = NA),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(colour = "black"),
+    axis.text = element_text(colour = "black", size = 10),
+    axis.title.x = element_text(colour = "black", size = 14),
+    legend.text = element_text(colour = "black", size = 11),
+    legend.title = element_text(colour = "black", size = 11)
+  )
+
+print(p)
+
+# ggsave(
+#   filename = "plots/GSEA_BATF_Treg_vs_literature_signatures.pdf",
+#   plot = p,
+#   width = 6.5,
+#   height = 6,
+#   dpi = 320
+# )
+```
+
+# ============================================================
+# Fig 1J
+# ============================================================
+```{r}
+library(tidyverse)
+library(broom)
+library(forcats)
+library(ggplot2)
+
+# =========================================================
+# 1. Load metadata
+# =========================================================
+md <- read.csv(
+  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/Shim_etal_withOtherCD4Subsets-TS291024.csv"
+) |>
+  dplyr::select(patient, Response, OS_time, Vital_status, TMB, Tumour_type2) |>
+  dplyr::rename(patient_id = patient)
+
+# =========================================================
+# 2. Load bulk RNA-seq matrix
+#    Assumes rows are genes, columns are patients
+# =========================================================
+mat <- read.csv(
+  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/Shim_etal_bulkRNAseq.csv"
+)
+
+rownames(mat) <- mat$X
+mat1 <- as.matrix(mat[, -1, drop = FALSE])
+
+# =========================================================
+# 3. Load pseudobulk gene signatures
+# =========================================================
+pb_gene_sigs <- readRDS(
+  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell_260825.rds"
+)
+
+pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
+
+# =========================================================
+# 4. Build filtered top-gene signature lists
+# =========================================================
+gene.sig.list.pb <- list()
+
+for (i in seq_along(pb_gene_sigs)) {
+  
+  df <- pb_gene_sigs[[i]] |>
+    as.data.frame() |>
+    dplyr::filter(logFC > 0.25, PValue < 0.05) |>
+    dplyr::filter(!grepl("^AC|CHAIN|^HIST|^HB|^TRA|^TRB|^IGH|^IGL|^IGK|^LINC", genes)) |>
+    dplyr::arrange(dplyr::desc(logFC)) |>
+    dplyr::rename(gene = genes)
+  
+  df <- df[seq_len(min(300, nrow(df))), , drop = FALSE]
+  
+  current_sig <- names(pb_gene_sigs)[i]
+  gene.sig.list.pb[[current_sig]] <- df
+}
+
+# Rename signatures to cleaner names
+name_map <- c(
+  "Progenitor CD4" = "ProgCD4",
+  "Th17 CD4" = "Th17",
+  "BATF Treg" = "BATFTreg",
+  "Tfh CD4" = "TfhCD4",
+  "Tcm-like Treg" = "TcmTreg"
+)
+
+names(gene.sig.list.pb) <- unname(name_map[names(gene.sig.list.pb)])
+
+# =========================================================
+# 5. Helper function to score a signature per patient
+#    Uses geometric mean of positive-expression genes
+# =========================================================
+score_signature <- function(expr_mat, genes) {
+  genes_use <- intersect(genes, rownames(expr_mat))
+  
+  if (length(genes_use) == 0) {
+    return(tibble(patient_id = colnames(expr_mat), score = NA_real_))
+  }
+  
+  score_vec <- apply(expr_mat[genes_use, , drop = FALSE], 2, function(x) {
+    x_pos <- x[x > 0]
+    if (length(x_pos) == 0) {
+      NA_real_
+    } else {
+      exp(mean(log(x_pos)))
+    }
+  })
+  
+  tibble(
+    patient_id = names(score_vec),
+    score = as.numeric(score_vec)
+  )
+}
+
+# =========================================================
+# 6. Score all signatures
+# =========================================================
+gene.sig.output <- list()
+
+for (sig_name in names(gene.sig.list.pb)) {
+  genes <- gene.sig.list.pb[[sig_name]]$gene
+  
+  sig_df <- score_signature(expr_mat = mat1, genes = genes) |>
+    dplyr::rename(!!sig_name := score)
+  
+  gene.sig.output[[sig_name]] <- sig_df
+}
+
+# Add simple CD8 and CD4 infiltration proxies
+cd8_df <- score_signature(
+  expr_mat = mat1,
+  genes = c("CD8A", "CD8B", "CD3D", "CD3E", "CD3G")
+) |>
+  dplyr::rename(cd8 = score)
+
+cd4_df <- score_signature(
+  expr_mat = mat1,
+  genes = c("CD4", "CD3D", "CD3E", "CD3G")
+) |>
+  dplyr::rename(cd4 = score)
+
+gene.sig.output[["cd8"]] <- cd8_df
+gene.sig.output[["cd4"]] <- cd4_df
+
+# =========================================================
+# 7. Merge all signature scores with metadata
+# =========================================================
+gene.sig.df <- purrr::reduce(gene.sig.output, dplyr::full_join, by = "patient_id") |>
+  dplyr::left_join(md, by = "patient_id") |>
+  dplyr::mutate(
+    event = ifelse(Response == "response", 1, 0)
+  )
+
+# =========================================================
+# 8. Dichotomise variables at cohort median
+# =========================================================
+gene.sig.df <- gene.sig.df |>
+  dplyr::mutate(
+    BATFTreg_cat = factor(
+      ifelse(BATFTreg > median(BATFTreg, na.rm = TRUE), "high", "low"),
+      levels = c("low", "high")
+    ),
+    cd8_cat = factor(
+      ifelse(cd8 > median(cd8, na.rm = TRUE), "high", "low"),
+      levels = c("low", "high")
+    ),
+    cd4_cat = factor(
+      ifelse(cd4 > median(cd4, na.rm = TRUE), "high", "low"),
+      levels = c("low", "high")
+    ),
+    tmb_cat = factor(
+      ifelse(TMB > median(TMB, na.rm = TRUE), "high", "low"),
+      levels = c("low", "high")
+    )
+  )
+
+# Optional: inspect cohort size after complete-case filtering
+analysis_df_cd8 <- gene.sig.df |>
+  dplyr::select(patient_id, event, BATFTreg_cat, cd8_cat, tmb_cat) |>
+  tidyr::drop_na()
+
+analysis_df_cd4 <- gene.sig.df |>
+  dplyr::select(patient_id, event, BATFTreg_cat, cd4_cat, tmb_cat) |>
+  tidyr::drop_na()
+
+cat("N for BATFTreg + CD8 + TMB model:", nrow(analysis_df_cd8), "\n")
+cat("N for BATFTreg + CD4 + TMB model:", nrow(analysis_df_cd4), "\n")
+
+# =========================================================
+# 9. Fit multivariable logistic regression models
+# =========================================================
+mod_cd4_cd8 <- glm(
+  event ~ BATFTreg_cat + cd8_cat + cd4_cat + tmb_cat,
+  data = gene.sig.df |>
+    dplyr::select(patient_id, event, BATFTreg_cat, cd8_cat, cd4_cat, tmb_cat) |>
+    tidyr::drop_na(),
+  family = binomial(link = "logit")
+)
+
+# =========================================================
+# 10. Helper to extract OR, CI, and p values
+# =========================================================
+extract_or_table <- function(model) {
+  broom::tidy(model) |>
+    dplyr::mutate(
+      OR = exp(estimate),
+      Lower_CI = exp(estimate - 1.96 * std.error),
+      Upper_CI = exp(estimate + 1.96 * std.error)
+    ) |>
+    dplyr::rename(
+      P_Value = p.value
+    ) |>
+    dplyr::select(term, estimate, std.error, OR, Lower_CI, Upper_CI, P_Value)
+}
+
+res_cd4_cd8 <- extract_or_table(mod_cd4_cd8)
+res_cd4_cd8
+
+# =========================================================
+# 11. Pull out BATFTreg result for sentence-writing
+# =========================================================
+batf_cd4_cd8 <- res_cd4_cd8 |>
+  dplyr::filter(term == "BATFTreg_cathigh")
+
+format_num <- function(x, digits = 2) {
+  formatC(x, format = "f", digits = digits)
+}
+
+format_p <- function(p) {
+  if (is.na(p)) {
+    NA_character_
+  } else if (p < 0.001) {
+    formatC(p, format = "e", digits = 2)
+  } else {
+    formatC(p, format = "f", digits = 3)
+  }
+}
+
+cat(
+  "CD4+CD8-adjusted BATFTreg result: OR = ",
+  format_num(batf_cd4_cd8$OR),
+  ", 95% CI ",
+  format_num(batf_cd4_cd8$Lower_CI),
+  " - ",
+  format_num(batf_cd4_cd8$Upper_CI),
+  ", p = ",
+  format_p(batf_cd4_cd8$P_Value),
+  "\n",
+  sep = ""
+)
+
+# =========================================================
+# 12. Forest plot for one chosen model
+# =========================================================
+# =========================================================
+# 12. Forest plot for CD4 + CD8-adjusted model
+# =========================================================
+plot_df <- res_cd4_cd8 |>
+  dplyr::filter(term != "(Intercept)") |>
+  dplyr::mutate(
+    term = dplyr::recode(
+      term,
+      "BATFTreg_cathigh" = "BATF+ Treg high",
+      "cd8_cathigh" = "CD8 high",
+      "cd4_cathigh" = "CD4 high",
+      "tmb_cathigh" = "TMB high"
+    ),
+    term = factor(
+      term,
+      levels = rev(c("BATF+ Treg high", "CD8 high", "CD4 high", "TMB high"))
+    ),
+    sig = ifelse(P_Value < 0.05, "p < 0.05", "p ≥ 0.05"),
+    ci_label = paste0(
+      "OR ", format_num(OR), " [",
+      format_num(Lower_CI), " - ",
+      format_num(Upper_CI), "]"
+    )
+  )
+
+ggplot(plot_df, aes(x = term, y = OR, fill = sig)) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0.15) +
+  geom_point(shape = 21, size = 5, colour = "black") +
+  geom_text(aes(label = ci_label), hjust = 0.5, vjust = -1, size = 4) +
+  coord_flip() +
+  scale_y_log10() +
+  scale_fill_manual(values = c("p < 0.05" = "firebrick", "p ≥ 0.05" = "black")) +
+  theme_classic() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 14, colour = "black"),
+    axis.text.x = element_text(size = 11, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    legend.position = "top",
+    legend.title = element_blank()
+  ) +
+  labs(y = "Odds ratio of anti-PD-1 response")
+
+#ggsave("Fig1J.pdf", width = 4, height = 3.8, dpi = 320)
+```

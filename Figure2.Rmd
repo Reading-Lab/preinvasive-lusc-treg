@@ -1,0 +1,2259 @@
+---
+title: "CD4_paper_Fig2"
+output: html_document
+date: "2026-01-14"
+---
+
+```{r setup, include=FALSE}
+
+```
+
+
+# ============================================================
+# Fig 2B - circos
+# ============================================================
+
+```{r}
+# ============================================================
+# Libraries
+# ============================================================
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(reshape2)
+  library(circlize)
+})
+
+# ============================================================
+# 0) Load lesion object and harmonise metadata
+# ============================================================
+seu <- readRDS("/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/PBMC_CD4_SG_clustering_names_110925.rds")
+lesion <- readRDS("/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/newTcells_newPID_version1-TS260825.rds")
+
+md <- lesion@meta.data |>
+  mutate(
+    seq_folder1 = case_when(
+      seq_folder %in% c("P157_CIS_LT1", "P157_CIS_LT2") ~ "P157_CIS_LT_TP1",
+      seq_folder == "P157_LTCIS" ~ "P157_CIS_LT_TP2",
+      seq_folder %in% c("P155_Normal", "P155_NormRep") ~ "P155_Normal",
+      TRUE ~ seq_folder
+    ),
+    final_pathology = if_else(
+      seq_folder1 %in% c(
+        "P149_CIS", "P152_CIS", "P153_CIS",
+        "P157_CIS_LT_TP1", "P157_CIS_LT_TP2",
+        "P704_RIB_CIS", "P158_RIB_POST_CIS",
+        "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS",
+        "P159_TR_Abnorm"
+      ),
+      "CIS", "Normal"
+    )
+  )
+
+lesion@meta.data <- md
+
+# ============================================================
+# 1) Subset lesion to desired samples only
+# ============================================================
+cells_to_keep <- lesion@meta.data %>%
+  filter(!seq_folder %in% c("P153_CIS", "P153_Normal", "P157_MTCIS")) %>%  # remove these samples
+  pull(cells)
+
+lesion <- subset(lesion, cells = cells_to_keep)
+
+# ============================================================
+# 2) Build unified clonotype dataframe: PBMC + lesion
+# ============================================================
+
+# --- PBMC arm (from `seu`) ---
+pbmc_df <- seu@meta.data %>%
+  mutate(
+    final.cell.types = case_when(
+      final.cell.types == "BATF Treg" ~ "Effector Treg",
+      final.cell.types == "ISG CD4"   ~ "Naive-like CD4",
+      TRUE                            ~ final.cell.types
+    )
+  ) %>%
+  select(seq_folder, final.cell.types, cdr3) %>%
+  filter(seq_folder != "P151_PBMC") %>%     # exclude this PBMC sample
+  drop_na(cdr3) %>%
+  mutate(
+    loc     = "PBMC",
+    sample  = gsub("_PBMC", "", seq_folder),
+    patient = gsub("_T1|_T2", "", sample)
+  )
+
+# --- lesion arm ---
+lesion_df <- lesion@meta.data %>%
+  # Explicitly call dplyr and rename during the select
+  dplyr::select(seq_folder1, final.cell.types = cell.types, cdr3) %>%
+  drop_na(cdr3) %>%
+  mutate(loc = "lesion") %>%
+  filter(seq_folder1 %in% c(
+    "P157_CIS_LT_TP1", "P157_CIS_LT_TP2",
+    "P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS",
+    "P159_TR_Abnorm", "P704_RIB_CIS"
+  )) %>%
+  mutate(
+    sample = case_when(
+      seq_folder1 %in% c("P158_RIB_POST_CIS","P158_RUL_CAR_CIS","P158_RUL_ORI_CIS") ~ "P158_T1",
+      seq_folder1 == "P157_CIS_LT_TP2" ~ "P157_T2",
+      seq_folder1 == "P157_CIS_LT_TP1" ~ "P157_T1",
+      seq_folder1 == "P159_TR_Abnorm"  ~ "P159",
+      seq_folder1 == "P704_RIB_CIS"    ~ "P704",
+      TRUE ~ seq_folder1
+    ),
+    patient = gsub("_T1|_T2", "", sample),
+    seq_folder = seq_folder1
+  ) %>%
+  dplyr::select(seq_folder, final.cell.types, cdr3, loc, sample, patient)
+
+# --- combine ---
+data <- bind_rows(pbmc_df, lesion_df)
+
+# ============================================================
+# 3) Create a clonotype-by-sector matrix for CD4/Treg only
+# ============================================================
+df_tmp <- data %>%
+  select(cdr3, loc, final.cell.types) %>%
+  filter(grepl("CD4|Treg", final.cell.types)) %>%
+  group_by(cdr3, loc, final.cell.types) %>%
+  summarise(n_cdr3 = n(), .groups = "drop") %>%
+  mutate(cell.types_loc = paste0(final.cell.types, "_", loc)) %>%
+  select(cdr3, cell.types_loc, n_cdr3) %>%
+  pivot_wider(names_from = cell.types_loc, values_from = n_cdr3, values_fill = 0)
+
+cell_types <- colnames(df_tmp)[-1]
+
+# ============================================================
+# 4) Compute "shared" counts
+# ============================================================
+chord_list <- vector("list", length(cell_types))
+names(chord_list) <- cell_types
+
+for (current_cell_type in cell_types) {
+  
+  # Keep only clonotypes present in this source sector
+  total_current_ct <- df_tmp %>%
+    filter(.data[[current_cell_type]] > 0) %>%
+    # Use pivot_longer instead of melt
+    pivot_longer(
+      cols = -c(cdr3, all_of(current_cell_type)), 
+      names_to = "to", 
+      values_to = "target_count"
+    ) %>%
+    filter(target_count > 0) %>%
+    group_by(to) %>%
+    summarise(
+      total_current = sum(.data[[current_cell_type]]),
+      .groups = "drop"
+    )
+  
+  chord_list[[current_cell_type]] <- total_current_ct
+  message("Processed source sector: ", current_cell_type)
+}
+
+# --- symmetric merge ---
+chord_df_shared <- bind_rows(chord_list, .id = "from") %>%
+  mutate(
+    from = as.character(from),
+    to   = as.character(to),
+    a = pmin(from, to),
+    b = pmax(from, to)
+  ) %>%
+  group_by(from = a, to = b) %>%
+  summarise(value = sum(total_current), .groups = "drop")
+
+# ============================================================
+# 5) Compute "unshared" counts per sector
+# ============================================================
+a <- data %>%
+  filter(grepl("CD4|Treg", final.cell.types)) %>%
+  drop_na(cdr3) %>%
+  group_by(cdr3, final.cell.types, loc, sample) %>%
+  summarise(n_cdr3 = n(), .groups = "drop") %>%
+  mutate(cell.types_loc = paste0(final.cell.types, "_", loc)) %>%
+  # Keep only the columns we need for the pivot to avoid extra ID columns
+  select(cdr3, sample, cell.types_loc, n_cdr3) %>% 
+  pivot_wider(names_from = cell.types_loc, values_from = n_cdr3, values_fill = 0)
+
+# Now total_shared will only look at the numeric count columns
+a <- a %>%
+  mutate(total_shared = rowSums(across(where(is.numeric)))) %>%
+  pivot_longer(
+    cols = -c(cdr3, sample, total_shared),
+    names_to = "cell.types_loc",
+    values_to = "n_cdr3"
+  ) %>%
+  filter(n_cdr3 > 0)
+
+# Mark unshared clonotypes
+unshared_all_df <- a %>%
+  mutate(is_unshared = total_shared == 1) %>%
+  filter(is_unshared) %>%
+  separate(cell.types_loc, into = c("final.cell.types", "loc"), sep = "_(?=[^_]+$)") %>%
+  group_by(final.cell.types, loc) %>%
+  summarise(value = sum(n_cdr3), .groups = "drop") %>%
+  mutate(from = paste0(final.cell.types, "_", loc),
+         to   = from) %>%
+  select(from, to, value)
+
+unshared_all_df <- unshared_all_df %>% mutate(value = value / 2)
+
+# ============================================================
+# 6) Combine shared + unshared into final chord dataframe
+# ============================================================
+chord_df2 <- bind_rows(
+  chord_df_shared %>% select(from, to, value),
+  unshared_all_df  %>% select(from, to, value)
+) %>%
+  mutate(across(c(from, to), as.character)) %>%
+  mutate(value = replace_na(value, 0))
+
+# ============================================================
+# 7) Scale PBMC links down
+# ============================================================
+chord_df_plot <- chord_df2 %>%
+  mutate(
+    value = if_else(grepl("_PBMC$", from), value / 10, value)
+  )
+
+# ============================================================
+# 8) Sector ordering + gaps by compartment
+# ============================================================
+get_comp <- function(x) sub(".*_(lesion|PBMC)$", "\\1", x)
+
+sectors <- unique(c(chord_df_plot$from, chord_df_plot$to))
+compartment <- get_comp(sectors)
+
+sector_order <- sectors[order(factor(compartment, levels = c("lesion", "PBMC")), sectors)]
+grp_ord <- get_comp(sector_order)
+
+small_gap <- 2
+big_gap   <- 12
+last_in_group <- c(which(grp_ord[-length(grp_ord)] != grp_ord[-1]), length(grp_ord))
+gap_after <- rep(small_gap, length(sector_order))
+gap_after[last_in_group] <- big_gap
+
+# ============================================================
+# 9) Colours
+# ============================================================
+comp_cols <- c(lesion = "#4E79A7", PBMC = "#59A14F")
+grid.col  <- setNames(comp_cols[grp_ord], sector_order)
+stopifnot(identical(names(grid.col), sector_order))
+
+all_sectors <- unique(c(chord_df_plot$from, chord_df_plot$to))
+
+# default grey ribbons, override specific sources
+src_palette <- setNames(rep("gray70", length(all_sectors)), all_sectors)
+src_palette[c("BATF Treg_lesion", "Effector Treg_PBMC")] <- "firebrick"
+
+# row-aligned colour vector, one entry per row in chord_df_plot
+link_col <- unname(as.character(src_palette[match(chord_df_plot$from, names(src_palette))]))
+stopifnot(length(link_col) == nrow(chord_df_plot), !any(is.na(link_col)))
+
+# ============================================================
+# 10) Plot to PDF
+# ============================================================
+out_pdf <- "/Users/Petros/Downloads/all_comps_circos_plot_grey_x10scale_updated.pdf"
+pdf(out_pdf, width = 8, height = 8)
+
+circos.clear()
+circos.par(start.degree = 90, gap.after = gap_after, track.margin = c(0.01, 0.01))
+
+chordDiagram(
+  x = chord_df_plot,
+  order = sector_order,
+  grid.col = grid.col,       
+  col = link_col,            
+  transparency = 0.15,
+  annotationTrack = "grid",
+  preAllocateTracks = list(track.height = 0.06)
+)
+
+# sector labels
+circos.trackPlotRegion(
+  track.index = 1,
+  panel.fun = function(x, y) {
+    circos.text(
+      get.cell.meta.data("xcenter"),
+      get.cell.meta.data("ylim")[2] + mm_y(1.5),
+      labels = get.cell.meta.data("sector.index"),
+      facing = "clockwise",
+      niceFacing = TRUE,
+      adj = c(0, 0.5),
+      cex = 0.55
+    )
+  },
+  bg.border = NA
+)
+
+legend("topleft", legend = names(comp_cols), fill = comp_cols, bty = "n", title = "Compartment")
+legend(
+  "topright",
+  legend = c("BATF Treg_lesion (source)", "Effector Treg_PBMC (source)", "Others"),
+  fill   = c("firebrick", "firebrick", "gray70"),
+  bty = "n",
+  title = "Ribbons (by source)"
+)
+
+dev.off()
+message("Saved: ", out_pdf)
+
+```
+
+# ============================================================
+# Fig 2C+H - stacked barplot
+# ============================================================
+```{r}
+# now create dataframe
+data <- seu@meta.data %>% 
+  mutate(final.cell.types = ifelse(final.cell.types == "BATF Treg", "Effector Treg",
+                                   ifelse(final.cell.types == "ISG CD4", "Naive-like CD4", final.cell.types))) %>% 
+  select(seq_folder, final.cell.types, cdr3) %>% 
+  filter(seq_folder != "P151_PBMC") %>% 
+  tidyr::drop_na(cdr3) %>% 
+  mutate(loc = "PBMC",
+         sample = gsub("_PBMC", "", seq_folder),
+         patient = gsub("_T1|_T2", "", sample)) %>% 
+  rbind(
+    lesion@meta.data %>% 
+      select(seq_folder1, cell.types, cdr3) %>% 
+      dplyr::rename(final.cell.types = cell.types) %>% 
+      tidyr::drop_na(cdr3) %>% 
+      mutate(loc = "lesion") %>% 
+      filter(seq_folder1 %in% c("P157_CIS_LT_TP1", "P157_CIS_LT_TP2", "P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS",
+                                "P159_TR_Abnorm", "P704_RIB_CIS")) %>% 
+      mutate(sample = ifelse(seq_folder1 %in% c("P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS"), "P158_T1",
+                             ifelse(seq_folder1 == "P157_CIS_LT_TP2", "P157_T2",
+                                    ifelse(seq_folder1 == "P157_CIS_LT_TP1", "P157_T1",
+                                           ifelse(seq_folder1 == "P159_TR_Abnorm", "P159", "P704")))),
+             patient = gsub("_T1|_T2", "", sample)) %>% 
+      dplyr::rename(seq_folder = seq_folder1)
+  )
+
+
+# export the cdr3s & look at sharing
+join_cdr3s <- data %>% 
+  select(sample, loc, cdr3, final.cell.types) %>% 
+  drop_na(cdr3) %>% 
+  filter(grepl("CD4|Treg", final.cell.types)) %>% 
+  group_by(cdr3, final.cell.types, sample, loc) %>% 
+  summarise(n_cdr3 = n()) %>% 
+  mutate(cell.types_loc = paste0(final.cell.types, "_", loc)) %>% 
+  reshape2::dcast(cdr3 + sample ~ cell.types_loc, value.var = "n_cdr3") %>% 
+  filter(!is.na(`BATF Treg_lesion`))
+join_cdr3s[is.na(join_cdr3s)] <- 0
+join_cdr3s <- join_cdr3s %>% 
+  mutate(total_shared = rowSums(across(`BATF Treg_lesion`:last_col())))
+
+join_cdr3s1 <- join_cdr3s %>% 
+  reshape2::melt(id.vars = c("cdr3", "sample", "total_shared"), value.name = "n_cdr3") %>%  
+  separate(variable, into = c("final.cell.types", "loc"), sep = "_(?=[^_]+$)") %>% 
+  filter(n_cdr3 > 0) %>% 
+  mutate(batf_unshared = ifelse(final.cell.types == "BATF Treg" & loc == "lesion" & total_shared == 1, "Batf unshared", NA),
+         new_n_cdr3 = ifelse(final.cell.types == "BATF Treg" & loc == "lesion", n_cdr3 - 1, n_cdr3))
+
+# get unshared 
+batf_unshared <- join_cdr3s1 %>% 
+  filter(!is.na(batf_unshared)) %>% 
+  group_by(loc) %>% 
+  summarise(n = sum(n_cdr3)) 
+
+shared <- join_cdr3s1 %>% 
+  filter(is.na(batf_unshared)) %>% 
+  group_by(loc) %>% 
+  summarise(n = sum(n_cdr3)) %>% 
+  rbind(batf_unshared %>% 
+          mutate(loc = "unshared")) %>%
+  mutate(prop_shared = n / sum(n))
+
+if(sum(shared$n) == sum(join_cdr3s$total_shared)) {
+  print("All cells maintained")
+} else {
+  print("Warning check through")
+}
+
+# what about cell types & getting significance?
+shared_cell_types <- join_cdr3s1 %>% 
+  filter(is.na(batf_unshared)) %>% 
+  group_by(loc, final.cell.types, sample) %>% 
+  summarise(n = sum(n_cdr3)) %>% 
+  group_by(loc, sample) %>% 
+  mutate(prop_shared = n / sum(n))
+
+shared_cell_types1 <- shared_cell_types %>% 
+  group_by(loc,final.cell.types) %>% 
+  summarise(total_cells = sum(n)) %>% 
+  group_by(loc) %>% 
+  mutate(prop_shared = total_cells / sum(total_cells))
+
+
+
+
+# instead of combining all together, can we try and plot this by patient/sample instead?
+shared_cell_types1 <- shared_cell_types %>% 
+  group_by(loc, final.cell.types) %>% 
+  summarise(mean_shared = mean(prop_shared),
+            sd = sd(prop_shared),
+            n=n(),
+            se = sd/sqrt(n)) %>% 
+  group_by(loc) %>%
+  mutate(
+    mean_norm = mean_shared / sum(mean_shared) * 100,
+    se_norm   = se / sum(mean_shared) * 100,  # scale SE the same way
+    cs = cumsum(mean_norm)
+  )
+shared_ct_list <- split(shared_cell_types1, shared_cell_types1$loc)
+
+
+library(lme4)
+library(emmeans)
+eps <- 1e-4  # small offset so logit is defined
+
+run_target_mixed_model <- function(df, loc_use, target_types) {
+  
+  df1 <- df %>%
+    filter(loc == loc_use) %>%
+    mutate(
+      p = pmin(pmax(prop_shared, eps), 1 - eps),
+      logit_p = log(p / (1 - p)),
+      is_target = final.cell.types %in% target_types
+    )
+  
+  fit <- lmer(logit_p ~ is_target + (1 | sample), data = df1)
+  
+  # Estimated marginal means and contrast on logit scale
+  emm <- emmeans(fit, ~ is_target)
+  ctr <- contrast(emm, method = "revpairwise")  # target TRUE vs FALSE
+  
+  # Back-transform (approx) to probabilities for reporting
+  emm_df <- as.data.frame(emm) %>%
+    mutate(
+      est_prob = plogis(emmean),
+      lower_prob = plogis(emmean - 1.96 * SE),
+      upper_prob = plogis(emmean + 1.96 * SE)
+    )
+  
+  list(
+    data = df1,
+    fit = fit,
+    emmeans = emm_df,
+    contrast = as.data.frame(ctr)
+  )
+}
+
+# Lesion: BATF Treg + Progenitor vs all others
+res_lesion <- run_target_mixed_model(
+  df = shared_cell_types,
+  loc_use = "lesion",
+  target_types = c("BATF Treg", "Progenitor CD4")
+)
+
+res_lesion$emmeans
+res_lesion$contrast
+
+# PBMC: Effector Treg vs all others
+res_pbmc <- run_target_mixed_model(
+  df = shared_cell_types,
+  loc_use = "PBMC",
+  target_types = c("Effector Treg")
+)
+
+res_pbmc$emmeans
+res_pbmc$contrast
+
+
+
+
+fmt_p <- function(p) {
+  if (is.na(p)) return("p = NA")
+  if (p < 0.001) return("p < 0.001")
+  paste0("p = ", number(p, accuracy = 0.001))
+}
+
+p_lesion <- res_lesion$contrast$p.value[1]
+p_pbmc   <- res_pbmc$contrast$p.value[1]
+
+lab_lesion <- paste0("BATF Treg + Progenitor vs others: ", fmt_p(p_lesion))
+lab_pbmc   <- paste0("Effector Treg vs others: ", fmt_p(p_pbmc))
+
+for(i in seq_along(shared_ct_list)) {
+  
+  tmp_df <- shared_ct_list[[i]]
+  loc_i  <- names(shared_ct_list)[i]
+  
+  if(loc_i == "lesion") {
+    cell_type_levels <- c("BATF Treg", "Progenitor CD4", "Tcm-like Treg", "Tfh CD4", "Th17 CD4")
+    ann_lab <- lab_lesion
+  } else {
+    cell_type_levels <- c("Effector Treg","Tcm-like Treg", "Tem CD4", "Tm CD4")
+    ann_lab <- lab_pbmc
+  }
+  
+  tmp_df <- tmp_df %>%
+    mutate(final.cell.types = factor(final.cell.types, levels = rev(cell_type_levels)))
+  
+  p <- ggplot(data = tmp_df, aes(y = loc, x = mean_norm)) +
+    geom_col(aes(fill = final.cell.types), color = "black") +
+    geom_errorbar(aes(xmin = cs - se_norm, xmax = cs + se_norm), color = "black", width = 0.3) +
+    annotate("text",
+             x = 50,
+             y = loc_i,
+             label = ann_lab,
+             size = 5,
+             vjust = -12) +
+    coord_cartesian(clip = "off") +
+    theme_minimal() +
+    theme(
+      axis.title.y = element_blank(),
+      axis.title.x = element_text(size = 20, color = "black"),
+      axis.text = element_text(size = 16, color = "black"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 16),
+      legend.position = "right",
+      axis.line = element_line(color = "black"),
+      axis.ticks = element_line(color = "black"),
+      plot.margin = margin(10, 30, 10, 10)
+    ) +
+    labs(x = "Proportion of shared cells") +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+    scale_fill_manual(values = c(
+      "Tcm-like Treg" = "lightseagreen",
+      "Th17 CD4" = "navajowhite4",
+      "Effector Treg" = "firebrick",
+      "Naive-like CD4" = "royalblue4",
+      "Tm CD4" = "darkgoldenrod1",
+      "Tcm CD4" = "olivedrab",
+      "Tem CD4" = "burlywood",
+      "Temra CD4" = "plum1",
+      "BATF Treg" = "firebrick",
+      "Progenitor CD4" = "royalblue4",
+      "Tfh CD4" = "plum2"
+    )) +
+    guides(fill = guide_legend(reverse = TRUE))
+  
+  print(p)
+  #ggsave(paste0("plots/Lesion_PBMC_sharing_wBATF_patient_TP_celltypes_", names(shared_ct_list)[i], "_errorbars.pdf"), 
+  #dpi=320, width=6, height=2.5)
+}
+
+plot_based_lesion_mapping <- shared_cell_types %>%
+  filter(loc == "lesion") %>%
+  group_by(final.cell.types) %>%
+  summarise(
+    mean_shared = mean(prop_shared),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prop = mean_shared / sum(mean_shared),
+    pct = scales::percent(prop, accuracy = 0.1)
+  ) %>%
+  arrange(desc(prop))
+
+plot_based_lesion_mapping
+
+
+plot_based_pbmc_mapping <- shared_cell_types %>%
+  filter(loc == "PBMC") %>%
+  group_by(final.cell.types) %>%
+  summarise(
+    mean_shared = mean(prop_shared),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prop = mean_shared / sum(mean_shared),
+    pct = scales::percent(prop, accuracy = 0.1)
+  ) %>%
+  arrange(desc(prop))
+
+plot_based_pbmc_mapping
+
+```
+
+# ============================================================
+# Fig 2D - triad
+# ============================================================
+```{r}
+# perform a DGE between BATF Treg uniques, shared with naive/progenitor, and then sharing with the blood
+batf_private <- join_cdr3s %>% 
+  mutate(batf_private = rowSums(across(`Effector Treg_PBMC`:`Tm CD4_PBMC`))) %>% 
+  filter(batf_private == 0) %>% 
+  select(cdr3, sample)
+
+batf_naive <- join_cdr3s %>% 
+  filter(`Progenitor CD4_lesion` > 0) %>% 
+  select(cdr3, sample)
+
+batf_blood <- join_cdr3s %>% 
+  filter(`Progenitor CD4_lesion` == 0) %>% 
+  filter(`Effector Treg_PBMC` > 0 | `Naive-like CD4_PBMC` > 0 | `Tcm CD4_PBMC` > 0 |
+            `Tcm-like Treg_PBMC` > 0  | `Tem CD4_PBMC` > 0 | `Th17 CD4_PBMC` > 0  |  `Tm CD4_PBMC` > 0) %>% 
+  select(cdr3, sample)
+
+batf_tern <- rbind(
+  batf_private %>% 
+    mutate(group = "private"),
+  batf_naive %>% 
+    mutate(group = "naive"),
+  batf_blood %>% 
+    mutate(group = "blood")
+) 
+
+# subset the blood and lesion objects
+lesion_cells <- lesion@meta.data %>% 
+  mutate(sample = ifelse(seq_folder1 %in% c("P158_RIB_POST_CIS", "P158_RUL_CAR_CIS", "P158_RUL_ORI_CIS"), "P158_T1",
+                         ifelse(seq_folder1 == "P157_CIS_LT_TP2", "P157_T2",
+                                ifelse(seq_folder1 == "P157_CIS_LT_TP1", "P157_T1",
+                                       ifelse(seq_folder1 == "P159_TR_Abnorm", "P159", "P704")))),
+         patient = gsub("_T1|_T2", "", sample)) %>% 
+  left_join(batf_tern, by = c("cdr3","sample")) %>% 
+  filter(!is.na(group) & cell.types == "BATF Treg") 
+
+lesion_sub <- subset(lesion, cells = lesion_cells$cells)
+
+row.names(lesion_cells) <- lesion_cells$cells
+lesion_sub@meta.data <- lesion_cells
+
+saveRDS(lesion_sub, "RDS/BATF_lesPBMC_seurat.rds")
+lesion_sub <- readRDS("RDS/BATF_lesPBMC_seurat.rds")
+
+# maybe just use the lesion cells. are we going to get anything?
+DefaultAssay(lesion_sub) <- "RNA"
+
+counts <- as.matrix(lesion_sub@assays$RNA@counts)
+
+metadata <- lesion_sub@meta.data 
+
+# Create single cell experiment object
+sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = counts), colData = metadata)
+
+# Identify groups for aggregation of counts
+library(SingleCellExperiment)
+colData(sce) <- colData(sce) %>%
+  as.data.frame() %>% 
+  mutate(
+    group = as.factor(group),
+    sample = as.factor(sample)
+  ) %>%
+  DataFrame()
+saveRDS(sce, "RDS/BATF_Treg_tern_sce.rds")
+
+#psce <- glmGamPoi::pseudobulk(sce, group_by = vars(group, sample))
+psce <- readRDS("RDS/BATF_Treg_tern_psce.rds")
+psce = sce
+
+group <- unique(colData(psce)$group)
+
+pb_gene_sigs <- list()
+
+library(edgeR)
+
+for(i in 1:length(group)) {
+  current_cell_type <- group[i]
+  print(current_cell_type)
+  
+  colData(psce)$is_cct <- colData(psce)$group == current_cell_type
+  
+  design <- model.matrix(~0+ is_cct, data = colData(psce))
+  
+  y <- DGEList(counts = counts(psce), remove.zeros = TRUE)
+  y <- calcNormFactors(y)
+  y <- estimateDisp(y, design)
+  fit <- glmQLFit(y, design)
+  
+  B_vs_O <- glmLRT(fit, contrast = makeContrasts(is_cctTRUE-is_cctFALSE, levels = design))
+  res <- topTags(B_vs_O, n = nrow(y$counts))
+  
+  dat2 <- as.data.frame(res) %>% 
+    mutate(genes = row.names(.))
+  
+  pb_gene_sigs[[as.character(current_cell_type)]] <- dat2
+}
+
+saveRDS(pb_gene_sigs, "RDS/Batf_Treg_lesPBMC_pb_sigs.rds")
+pb_gene_sigs <- readRDS("RDS/Batf_Treg_lesPBMC_pb_sigs.rds")
+
+library(ggtern)
+
+pb_sigs <- bind_rows(pb_gene_sigs, .id = "group") %>% 
+  filter(!grepl("^AC|^HB|^TRG|^TRA|^TRB|RIK|^IG", genes)) %>% 
+  reshape2::dcast(genes ~ group, value.var = "logFC")
+
+pb_sigs_norm <- pb_sigs %>%
+  rowwise() %>%
+  mutate(
+    total = sum(exp(c_across(blood:private))),
+    blood_prop = exp(blood) / total,
+    naive_prop = exp(naive) / total,
+    private_prop = exp(private) / total
+  ) %>%
+  ungroup() %>% 
+  left_join(
+    bind_rows(pb_gene_sigs, .id = "group") %>% 
+      filter(logFC > 0) %>% 
+      filter(!grepl("^AC|^HB|^TRG|^TRA|^TRB|RIK|^IG", genes)) %>% 
+      mutate(Significance = ifelse(group == "blood" & logFC > 0.35 & PValue < 0.05, "Enriched in Blood",
+                                   ifelse(group == "naive" & logFC > 0.35 & PValue < 0.05, "Enriched in Naive",
+                                          ifelse(group == "private" & logFC > 0.35 & PValue < 0.05, "Enriched in Private", NA)))) %>% 
+      select(genes, Significance) %>% 
+      drop_na(Significance) %>% 
+      distinct(),
+    by = "genes"
+  ) %>% 
+  mutate(Significance = ifelse(is.na(Significance), "ns", Significance))
+
+geneSig <- bind_rows(pb_gene_sigs, .id = "group") %>% 
+  filter(logFC > 0 & PValue < 0.05) %>% 
+  filter(!grepl("^AC|^HB|^TRG|^TRA|^TRB|RIK|^IG", genes)) %>% 
+  filter(genes %in% c("KLF2", "KLF3", "LEF1", "STAT1", "S1PR1", "AREG", "CD86", "CCL20", "RUNX2",
+                      "CXCL13", "HSPA6", "HLA-DQB2", "HLA-DPA1", "CCR6", "HLA-DQA1", "PDCD1", "IFNG",
+                      "CCL4", "CXCR6", "IL10", "CCR8", "NKG7", "TNFRSF8", "IL2RA", "LAG3", "HAVCR2", "CXCL10", "GZMK"))
+geneSig <- pb_sigs_norm %>% 
+  mutate(label = ifelse(genes %in% geneSig$genes, genes, NA)) %>% 
+  drop_na(label)
+
+
+ggtern(data = pb_sigs_norm, aes(x = blood_prop, y = naive_prop, z = private_prop)) +
+  geom_point(aes(alpha=Significance, size=Significance, fill=Significance), pch=21) +
+  #geom_point(alpha=0.5, size=1) +
+  scale_alpha_manual(values = c("ns" = 0.15,"Enriched in Blood" = 0.4, "Enriched in Naive" = 0.4, "Enriched in Private" = 0.4)) +
+  scale_size_manual(values = c("ns" = 0.5, "Enriched in Blood" = 3, "Enriched in Naive" = 3, "Enriched in Private" = 3)) +
+  geom_text(data = geneSig, aes(label = genes, color=Significance), size = 5, fontface = "bold") + 
+  scale_color_manual(values = c("Enriched in Blood" = "#59A14F", "Enriched in Private" = "firebrick", "Enriched in Naive" =  "royalblue4")) +
+  scale_fill_manual(values = c("ns" = "gray50","Enriched in Blood" = "lightseagreen", "Enriched in Naive" = "royalblue1", "Enriched in Private" = "firebrick1")) +
+  theme_minimal() +
+  labs(
+    x = "Blood", 
+    y = "Naive", 
+    z = "Private"
+  )
+ggsave("plots/PBMC/BATF_Treg_les_ternary.pdf", dpi=320, width=13, height=13)
+```
+
+# ============================================================
+# Fig 2E - MHC
+# ============================================================
+```{r}
+# perform a UCell score with the T cell signalling modules
+# create the signatures
+library(msigdbr)
+sigs <- msigdbr(species = "Homo sapiens") 
+
+# start first with hallmark genes
+hallmark <- sigs %>% 
+  filter(gs_collection == "H" | gs_name %in% c("GOBP_ALPHA_BETA_T_CELL_ACTIVATION", "GOBP_ALPHA_BETA_T_CELL_DIFFERENTIATION",
+                                               "GOBP_T_CELL_ACTIVATION", "GOBP_T_CELL_ACTIVATION_INVOLVED_IN_IMMUNE_RESPONSE",
+                                               "GOBP_T_CELL_ACTIVATION_VIA_T_CELL_RECEPTOR_CONTACT_WITH_ANTIGEN_BOUND_TO_MHC_MOLECULE_ON_ANTIGEN_PRESENTING_CELL",
+                                               "GOBP_T_CELL_DIFFERENTIATION", "GOBP_T_CELL_CYTOKINE_PRODUCTION", "GOBP_T_CELL_CHEMOTAXIS",
+                                               "GOBP_T_CELL_RECEPTOR_SIGNALING_PATHWAY", "GOBP_T_CELL_MEDIATED_CYTOTOXICITY",
+                                               "REACTOME_INTERLEUKIN_15_SIGNALING")) %>% 
+  dplyr::rename(genes = gene_symbol)
+
+gl_list <- vector(mode = "list", length = length(unique(hallmark$gs_name)))
+
+for (i in 1:length(unique(hallmark$gs_name))) {
+  names(gl_list)[[i]] <- unique(hallmark$gs_name)[i]
+  gl_list[[i]] <- hallmark[hallmark$gs_name == unique(hallmark$gs_name)[i], "genes"]
+}
+
+saveRDS(gl_list, "gl_list.rds")
+
+# import UCell scores
+batf_lp_ucell <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/BATF_lesPBMC_seurat_UCell.rds")
+batf_lp_ucell <- batf_lp_ucell@meta.data
+
+cols <- grepl("GOBP|HALLMARK|cells", colnames(batf_lp_ucell))
+batf_ucell1 <- batf_lp_ucell[, cols] %>% 
+  left_join(lesion_cells %>% 
+              select(cells, sample, group),
+            by = "cells") %>% 
+  select(-cells) %>% 
+  reshape2::melt(id.vars = c("group", "sample"), variable.name = "signature", value.name = "score") %>% 
+  filter(grepl("GOBP|TGF_BETA|TNFA|IL2|IL6|INFLAMMATORY|INTERFERON", signature))
+
+comps <- combn(unique(batf_ucell1$group), 2, simplify = FALSE)
+
+ggplot(data=batf_ucell1, mapping=aes(x=group, y=score)) +
+  geom_violin((aes(fill=group))) +
+  geom_boxplot(outliers = FALSE, width=0.3, alpha=0.5) +
+  theme_minimal() +
+  facet_wrap(~signature, scales = "free_y") +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16, hjust = 0.5),
+    axis.text = element_text(size =12, color="black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10),
+    strip.text = element_text(size = 6),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black"),
+    axis.line = element_line(color = "black")
+  ) +
+  labs(
+    y="UCell score"
+  ) +
+  scale_fill_manual(values = c("naive" = "dodgerblue3", "blood" = "forestgreen", "private" = "firebrick")) +
+  stat_compare_means(method ="t.test", label = "p.format", comparisons = comps, size=3.5)
+
+# perform a linear mixed effects model
+library(lme4)
+library(lmerTest)
+
+mem_mods <- list()
+
+sigs <- as.character(unique(batf_ucell1$signature))
+
+for (i in sigs) {
+  df <- batf_ucell1 %>% 
+    filter(signature == i)
+  
+  mod <- lmer(score ~ group + (1 | sample), data = df, REML = FALSE)
+  
+  conf <- as.data.frame(confint(mod, method = "Wald")) %>% 
+    na.omit() %>% 
+    mutate(group = row.names(.)) %>% 
+    dplyr::rename(lower_ci = `2.5 %`,
+                  upper_ci = `97.5 %`)
+  
+  results_df <- as.data.frame(summary(mod)$coefficients) %>% 
+    mutate(group = row.names(.)) %>% 
+    left_join(conf, by = "group")
+  
+  mem_mods[[i]] <- results_df
+}
+source("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/SG_code/mod_results_df.R")
+mem_mods1 <- bind_rows(mem_mods, .id = "signature") %>% 
+  filter(!grepl("Intercept", group)) %>% 
+  dplyr::rename(std.error = `Std. Error`,
+                t_value = `t value`,
+                p_value = `Pr(>|t|)`,
+  ) %>% 
+  rbind(
+    a<-data.frame(
+      signature = sigs,
+      Estimate = 0,
+      std.error = NA, 
+      df = NA,
+      t_value = NA,
+      p_value = 1,
+      lower_ci = NA,
+      upper_ci = NA,
+      group = "blood"
+    )
+  ) %>% 
+  mutate(p.adj = p.adjust(p_value, method = "BH"),
+         Significance = factor(ifelse(p.adj < 0.05, "p < 0.05", "p > 0.05"), levels = c("p < 0.05", "p > 0.05")),
+         conf_int_label = paste0("[", sapply(lower_ci, format_p_value), " , ", sapply(upper_ci, format_p_value), "]"),
+         conf_int_label = ifelse(conf_int_label == "[NA , NA]", NA, conf_int_label),
+         group = gsub("group", "", group)
+  ) %>% 
+  rstatix::add_significance("p.adj")
+mem_mods1$p.adj.signif[mem_mods1$p.adj.signif == "ns"] <- ""
+
+ggplot(mem_mods1, aes(x=group, y=as.numeric(Estimate), fill = Significance)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray67") +
+  geom_errorbar(aes(ymin=as.numeric(lower_ci), ymax = as.numeric(upper_ci)), width = 0.2)+
+  geom_point(shape = 21, size = 7, color = "black", alpha = 0.95)+  
+  geom_text(aes(label = conf_int_label), size = 5, vjust=-1) +
+  coord_flip() +
+  theme_minimal() +
+  facet_wrap(~signature, scales = "free_x") +
+  scale_x_discrete(limits = rev)+
+  scale_fill_manual(values = c("p > 0.05" = "black", "p < 0.05" = "firebrick")) +
+  #scale_y_continuous(trans = "log10") +
+  theme(
+    axis.title.y  = element_blank(),
+    axis.title.x = element_text(size = 15, color = 'black', hjust = 0.5),
+    axis.text.x = element_text(size = 12, vjust = 0.5, color="black"),
+    axis.text.y = element_text(size = 12, vjust = 0.5, color="black"),
+    strip.text = element_text(size=12, color="black"),
+    legend.text = element_text(size=12, color="black"),
+    legend.title = element_blank(),
+    # axis.text.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = 'top',
+    axis.line = element_line(color="black"), 
+    axis.ticks = element_line(color="black")) +
+  labs(
+    y="Esimated effect sizes"
+  ) 
+ggsave("plots/PBMC/MEM_UCell_sigs_BATF_groups.pdf", dpi=320, width=20, height=14)
+
+# just show the TCR signalling one
+ggplot(a<-mem_mods1 %>% 
+         filter(signature == "GOBP_T_CELL_ACTIVATION_VIA_T_CELL_RECEPTOR_CONTACT_WITH_ANTIGEN_BOUND_TO_MHC_MOLECULE_ON_ANTIGEN_PRESENTING_CELL_UCell") %>% 
+         mutate(Significance = factor(ifelse(p_value < 0.05, "p < 0.05", "p > 0.05"), levels = c("p < 0.05", "p > 0.05"))), 
+       aes(x=group, y=as.numeric(Estimate), fill = Significance)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray67") +
+  geom_errorbar(aes(ymin=as.numeric(lower_ci), ymax = as.numeric(upper_ci)), width = 0.2)+
+  geom_point(shape = 21, size = 7, color = "black", alpha = 0.95)+  
+  geom_text(aes(label = conf_int_label), size = 5, vjust=-1) +
+  coord_flip() +
+  theme_minimal() +
+  facet_wrap(~signature, scales = "free_x") +
+  scale_x_discrete(limits = rev)+
+  scale_fill_manual(values = c("p > 0.05" = "black", "p < 0.05" = "firebrick")) +
+  #scale_y_continuous(trans = "log10") +
+  theme(
+    axis.title.y  = element_blank(),
+    axis.title.x = element_text(size = 15, color = 'black', hjust = 0.5),
+    axis.text.x = element_text(size = 12, vjust = 0.5, color="black"),
+    axis.text.y = element_text(size = 12, vjust = 0.5, color="black"),
+    strip.text = element_text(size=12, color="black"),
+    legend.text = element_text(size=12, color="black"),
+    legend.title = element_blank(),
+    # axis.text.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = 'top',
+    axis.line = element_line(color="black"), 
+    axis.ticks = element_line(color="black")) +
+  labs(
+    y="Esimated effect sizes"
+  ) 
+ggsave("plots/PBMC/MEM_UCell_sigs_BATF_pMHC_sig.pdf", dpi=320, width=3.5, height=7)
+```
+
+# ============================================================
+# Fig 2F - UMAP
+# ============================================================
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+# 1) Build plotting meta: join UMAP coords, harmonise labels, keep CD4/Treg only
+md1 <- seu@meta.data %>%
+  tibble::rownames_to_column("cells") %>%
+  left_join(
+    as.data.frame(Embeddings(seu, reduction = "umap")) %>%
+      tibble::rownames_to_column("cells") %>%
+      dplyr::rename(UMAP_1 = UMAP_1, UMAP_2 = UMAP_2),
+    by = "cells"
+  ) %>%
+  mutate(
+    final.cell.types = dplyr::case_when(
+      final.cell.types == "BATF Treg" ~ "Effector Treg",
+      final.cell.types == "ISG CD4"   ~ "Naive-like CD4",
+      TRUE                            ~ final.cell.types
+    )
+  ) %>%
+  filter(grepl("CD4|Treg", final.cell.types))
+
+# 2) Random plotting order so dense classes don't systematically sit on top
+set.seed(1)
+md1_plot <- md1 %>% slice_sample(prop = 1)
+
+# 3) Label positions: robust centroids (median)
+centroids <- md1_plot %>%
+  group_by(final.cell.types) %>%
+  summarise(
+    UMAP_1 = median(UMAP_1, na.rm = TRUE),
+    UMAP_2 = median(UMAP_2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 4) Plot
+p <- ggplot(md1_plot, aes(x = UMAP_1, y = UMAP_2)) +
+  geom_point(
+    aes(fill = final.cell.types),
+    shape = 21,
+    size = 4,       # match your "based on above" style
+    alpha = 0.8,
+    stroke = 0,
+    colour = "transparent"
+  ) +
+  # geom_label_repel(
+  #   data = centroids,
+  #   aes(label = final.cell.types),
+  #   max.overlaps = 20,
+  #   size = 6
+  # ) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 20, hjust = 0.5),
+    axis.title.y = element_text(size = 20, hjust = 0.5),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    legend.position = "none",
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    strip.text = element_text(size = 20)
+  ) +
+  scale_y_reverse() +
+  scale_x_reverse() +
+  scale_fill_manual(values = c(
+    "Tcm-like Treg"   = "lightseagreen",
+    "Th17 CD4"        = "navajowhite4",
+    "Effector Treg"   = "firebrick",
+    "Naive-like CD4"  = "royalblue4",
+    "Tm CD4"          = "darkgoldenrod1",
+    "Tcm CD4"         = "olivedrab",
+    "Tem CD4"         = "burlywood",
+    "Tem CD8"         = "plum1"
+  ))
+
+ggsave(
+  "plots/PBMC/CD4_UMAP_SG_cluster.pdf",
+  plot = p,
+  device = cairo_pdf,
+  width = 8,
+  height = 6
+)
+
+ggsave(
+  "plots/PBMC/CD4_UMAP_SG_cluster.png",
+  plot = p,
+  width = 8,
+  height = 6
+)
+
+```
+
+# ============================================================
+# Fig 2G
+# ============================================================
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggpubr)
+library(scales)
+library(Seurat)
+library(UCell)
+library(patchwork)
+library(rstatix)
+library(purrr)
+
+# ----------------------------
+# 0) BATF Treg signature from pseudobulk
+# ----------------------------
+pb_gene_sigs <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell.rds")
+pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
+
+gene.sig.list.pb <- vector("list", length(pb_gene_sigs))
+names(gene.sig.list.pb) <- names(pb_gene_sigs)
+
+for (i in seq_along(pb_gene_sigs)) {
+  df_tmp <- pb_gene_sigs[[i]] |>
+    as.data.frame() |>
+    dplyr::filter(logFC > 0.25, PValue < 0.05) |>
+    dplyr::filter(!grepl("^AC|CHAIN|^HIST|^HB|^TRA|^TRB|^IGH|^IGL|^IGK|^LINC", genes)) |>
+    dplyr::arrange(dplyr::desc(logFC)) |>
+    dplyr::rename(X = genes)
+  
+  df_tmp <- df_tmp[seq_len(min(300, nrow(df_tmp))), , drop = FALSE]
+  gene.sig.list.pb[[i]] <- df_tmp
+}
+
+batf_treg_sig <- gene.sig.list.pb$`BATF Treg`$X
+batf_treg_sig <- intersect(batf_treg_sig, rownames(seu))
+
+# ----------------------------
+# 1) Add UCell score
+# ----------------------------
+DefaultAssay(seu) <- "RNA"
+
+seu <- AddModuleScore_UCell(
+  seu,
+  features = list(BATF_Treg_pb = batf_treg_sig),
+  assay = "RNA",
+  name = NULL
+)
+
+score_col <- "BATF_Treg_pb"
+
+# ----------------------------
+# 2) Gene panel
+# ----------------------------
+gene_sets <- list(
+  "TIL Treg" = c(
+    "FOXP3", "BATF", "CCR8", "IKZF2", "IL2RA",
+    "CTLA4", "TNFRSF4", "TNFRSF9", "TNFRSF18", "ENTPD1"
+  )
+)
+
+module_levels <- c("TIL Treg")
+
+celltype_levels <- c(
+  "Effector Treg",
+  "Tcm-like Treg",
+  "Th17 CD4",
+  "Tem CD4",
+  "Tm CD4",
+  "Tcm CD4",
+  "Naive-like CD4"
+)
+
+gene_levels <- c(
+  "FOXP3", "BATF", "CCR8", "IKZF2", "IL2RA", "CTLA4",
+  "TNFRSF4", "TNFRSF9", "TNFRSF18", "ENTPD1"
+)
+
+genes_df <- enframe(gene_sets, name = "module", value = "gene") |>
+  unnest(gene) |>
+  select(gene, module) |>
+  mutate(module = factor(module, levels = module_levels))
+
+stopifnot(!anyDuplicated(gene_levels))
+
+genes_present <- intersect(genes_df$gene, rownames(seu))
+genes_missing <- setdiff(genes_df$gene, rownames(seu))
+
+if (length(genes_missing) > 0) {
+  message("Missing genes dropped: ", paste(genes_missing, collapse = ", "))
+}
+
+# choose your sample-level variable here
+sample_var <- dplyr::case_when(
+  "sample_id" %in% colnames(seu@meta.data) ~ "sample_id",
+  "seq_folder" %in% colnames(seu@meta.data) ~ "seq_folder",
+  TRUE ~ NA_character_
+)
+
+if (is.na(sample_var)) {
+  stop("Could not find a sample identifier column. Add one of: sample_id or seq_folder.")
+}
+
+df <- FetchData(
+  object = seu,
+  vars   = c("final.cell.types", sample_var, score_col, genes_present),
+  layer  = "data"
+) |>
+  rownames_to_column("cell.id") |>
+  mutate(
+    final.cell.types = case_when(
+      final.cell.types == "BATF Treg" ~ "Effector Treg",
+      final.cell.types == "ISG CD4" ~ "Naive-like CD4",
+      TRUE ~ final.cell.types
+    )
+  ) |>
+  filter(final.cell.types %in% celltype_levels) |>
+  rename(sample_id = all_of(sample_var))
+
+# ----------------------------
+# 3) Long format for dot plot
+# ----------------------------
+df_long <- df |>
+  pivot_longer(
+    cols = all_of(genes_present),
+    names_to = "gene",
+    values_to = "expr"
+  )
+
+summ <- df_long |>
+  group_by(final.cell.types, gene) |>
+  summarise(
+    mean_expr = mean(expr),
+    perc_expr = mean(expr > 0) * 100,
+    .groups = "drop"
+  ) |>
+  left_join(
+    genes_df |>
+      filter(gene %in% genes_present),
+    by = "gene"
+  ) |>
+  group_by(gene) |>
+  mutate(scaled_mean_expr = as.numeric(scale(mean_expr))) |>
+  ungroup() |>
+  mutate(
+    final.cell.types = factor(final.cell.types, levels = celltype_levels),
+    module = factor(module, levels = module_levels),
+    gene = factor(gene, levels = gene_levels)
+  )
+
+# ----------------------------
+# 4) UCell summary for fill column
+# ----------------------------
+ucell_summ <- df |>
+  group_by(final.cell.types) |>
+  summarise(
+    mean_ucell = mean(.data[[score_col]], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    final.cell.types = factor(final.cell.types, levels = celltype_levels),
+    signature = factor("BATF+ Treg\nUCell score", levels = "BATF+ Treg\nUCell score"),
+    scaled_ucell = as.numeric(scale(mean_ucell))
+  )
+
+# ----------------------------
+# 5) Stats versus Naive-like CD4
+# ----------------------------
+ref_group <- "Naive-like CD4"
+
+p_to_stars <- function(p) {
+  case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ ""
+  )
+}
+
+# 5a) sample-level test, compare per-sample mean scores
+sample_means <- df |>
+  group_by(sample_id, final.cell.types) |>
+  summarise(
+    mean_ucell = mean(.data[[score_col]], na.rm = TRUE),
+    .groups = "drop"
+  )
+
+sample_stats <- map_dfr(
+  setdiff(celltype_levels, ref_group),
+  function(ct) {
+    dat_sub <- sample_means |>
+      filter(final.cell.types %in% c(ct, ref_group))
+    
+    samp_counts <- dat_sub |>
+      count(final.cell.types) |>
+      tidyr::pivot_wider(names_from = final.cell.types, values_from = n, values_fill = 0)
+    
+    n_ct <- if (ct %in% colnames(samp_counts)) samp_counts[[ct]][1] else 0
+    n_ref <- if (ref_group %in% colnames(samp_counts)) samp_counts[[ref_group]][1] else 0
+    
+    p_val <- if (n_ct >= 2 && n_ref >= 2) {
+      wilcox.test(mean_ucell ~ final.cell.types, data = dat_sub)$p.value
+    } else {
+      NA_real_
+    }
+    
+    tibble(
+      final.cell.types = ct,
+      p = p_val,
+      label = p_to_stars(p_val),
+      stat_type = "Sample\nlevel"
+    )
+  }
+)
+
+sample_stats <- bind_rows(
+  sample_stats,
+  tibble(
+    final.cell.types = ref_group,
+    p = NA_real_,
+    label = "",
+    stat_type = "Sample\nlevel"
+  )
+) |>
+  mutate(
+    final.cell.types = factor(final.cell.types, levels = celltype_levels),
+    stat_type = factor(stat_type, levels = "Sample\nlevel")
+  )
+
+# 5b) cell-level test, compare all cells directly
+cell_stats <- map_dfr(
+  setdiff(celltype_levels, ref_group),
+  function(ct) {
+    dat_sub <- df |>
+      filter(final.cell.types %in% c(ct, ref_group))
+    
+    n_ct <- sum(dat_sub$final.cell.types == ct)
+    n_ref <- sum(dat_sub$final.cell.types == ref_group)
+    
+    p_val <- if (n_ct >= 2 && n_ref >= 2) {
+      wilcox.test(dat_sub[[score_col]] ~ dat_sub$final.cell.types)$p.value
+    } else {
+      NA_real_
+    }
+    
+    tibble(
+      final.cell.types = ct,
+      p = p_val,
+      label = p_to_stars(p_val),
+      stat_type = "Cell\nlevel"
+    )
+  }
+)
+
+cell_stats <- bind_rows(
+  cell_stats,
+  tibble(
+    final.cell.types = ref_group,
+    p = NA_real_,
+    label = "",
+    stat_type = "Cell\nlevel"
+  )
+) |>
+  mutate(
+    final.cell.types = factor(final.cell.types, levels = celltype_levels),
+    stat_type = factor(stat_type, levels = "Cell\nlevel")
+  )
+
+stats_df <- bind_rows(sample_stats, cell_stats)
+
+# optional multiple-testing correction within each stat type
+stats_df <- stats_df |>
+  group_by(stat_type) |>
+  mutate(
+    p_adj = p.adjust(p, method = "BH"),
+    label = p_to_stars(p_adj)
+  ) |>
+  ungroup()
+
+# ----------------------------
+# 6) Main dot plot
+# ----------------------------
+p_dot <- ggplot(summ, aes(x = gene, y = final.cell.types)) +
+  geom_point(
+    aes(fill = scaled_mean_expr, size = perc_expr),
+    shape = 21, colour = "black", stroke = 0
+  ) +
+  scale_fill_gradientn(
+    colours = c(
+      "darkblue", "#6DCCFF", "lightblue2", "white",
+      "lightgoldenrod2", "darkorange1", "red", "firebrick"
+    ),
+    values = scales::rescale(
+      c(-1.8, -1.2, -0.6, 0, 0.6, 1.2, 1.5, 1.8),
+      from = c(-1.8, 1.8)
+    ),
+    limits = c(-1.8, 1.8),
+    oob = scales::squish,
+    name = "Scaled mean expression /\nUCell score"
+  ) +
+  scale_radius(range = c(1, 10), name = "% expressed") +
+  facet_grid(~module, scales = "free_x", space = "free_x") +
+  scale_y_discrete(limits = rev) +
+  theme_pubr() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    panel.background = element_rect(colour = "black", fill = NA),
+    panel.grid.major = element_line(colour = "grey", linewidth = 0.2),
+    axis.text.x = element_text(size = 20, colour = "black", angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y = element_text(size = 20, colour = "black"),
+    strip.text = element_text(size = 15, colour = "black"),
+    legend.text = element_text(size = 15, colour = "black"),
+    legend.title = element_text(size = 18, colour = "black")
+  ) +
+  labs(x = NULL, y = NULL)
+
+# ----------------------------
+# 7) UCell heatmap column
+# ----------------------------
+p_ucell <- ggplot(ucell_summ, aes(x = signature, y = final.cell.types, fill = scaled_ucell)) +
+  geom_tile(colour = "black", linewidth = 0.2) +
+  scale_fill_gradientn(
+    colours = c(
+      "darkblue", "#6DCCFF", "lightblue2", "white",
+      "lightgoldenrod2", "darkorange1", "red", "firebrick"
+    ),
+    values = scales::rescale(
+      c(-1.8, -1.2, -0.6, 0, 0.6, 1.2, 1.5, 1.8),
+      from = c(-1.8, 1.8)
+    ),
+    limits = c(-1.8, 1.8),
+    oob = scales::squish,
+    name = "Scaled mean expression /\nUCell score"
+  ) +
+  scale_y_discrete(limits = rev) +
+  theme_pubr() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    panel.background = element_rect(colour = "black", fill = NA),
+    panel.grid.major = element_blank(),
+    axis.text.x = element_text(size = 16, colour = "black", angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.text = element_text(size = 15, colour = "black"),
+    legend.title = element_text(size = 18, colour = "black")
+  ) +
+  labs(x = NULL, y = NULL)
+
+# ----------------------------
+# 8) Stat columns
+# ----------------------------
+p_stats <- ggplot(stats_df, aes(x = stat_type, y = final.cell.types)) +
+  geom_tile(fill = "white", colour = "black", linewidth = 0.2) +
+  geom_text(aes(label = label), size = 9, fontface = "bold") +
+  scale_y_discrete(limits = rev) +
+  theme_pubr() +
+  theme(
+    axis.line = element_line(colour = "black"),
+    panel.background = element_rect(colour = "black", fill = NA),
+    panel.grid.major = element_blank(),
+    axis.text.x = element_text(size = 16, colour = "black", angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(x = NULL, y = NULL)
+
+# ----------------------------
+# 9) Combine
+# ----------------------------
+p_final <- p_dot + p_ucell + p_stats +
+  plot_layout(widths = c(10, 1.2, 1.8), guides = "collect") &
+  theme(legend.position = "right")
+
+p_final
+
+# inspect exact p values too
+stats_df |>
+  arrange(stat_type, final.cell.types)
+
+ggsave("plots/Dotplot/Fig2G.pdf", plot = p_final, dpi = 320, width = 8, height = 6)
+
+```
+
+# ============================================================
+# Fig 2I-J
+# ============================================================
+```{r}
+batf_pseudo <- read.csv("Files/BATF_Treg_groups_pseudotime.csv") %>%
+  dplyr::rename(cells = cell_id) %>% 
+  left_join(as.data.frame(lesion_sub@reductions[["umap"]]@cell.embeddings) %>% 
+              mutate(cells = row.names(.)),
+            by = "cells") %>% 
+  left_join(lesion_sub@meta.data %>% 
+              select(cells, group),
+            by = "cells")
+
+library(ggridges)
+ggplot(ucell_pseudo , 
+       aes(x = pseudotime, y = group)) + 
+  stat_density_ridges(aes(fill=group), quantile_lines = TRUE) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 22, hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size =18, color="black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 18),
+    strip.text = element_text(size=18),
+    legend.position = "none",
+    axis.ticks = element_line(color = "black"),
+    axis.line = element_line(color = "black")
+  ) +
+  labs(
+    x="Pseudotime"
+  ) +
+  scale_fill_manual(values = c("blood" = "#59A14F", "private" = "firebrick", "naive" =  "royalblue4")) 
+
++
+  scale_y_discrete(limits=limits, expand = expansion(mult=c(0,0.1)))
+ggsave("plots/PBMC/Les_PBMC_recluster_pseudotime_ridgeplot.pdf", dpi=320, width = 6, height = 8)
+
+# now plot some selected genes
+genes <- c("BATF", "TCF7", "FOXP1")
+
+mat <- as.data.frame(t(as.matrix(les_pbmc@assays$RNA@data[genes, rownames(les_pbmc@meta.data)]))) %>% 
+  mutate(cells = row.names(.)) %>% 
+  left_join(pseudotime, by = "cells") %>% 
+  arrange(pseudotime) %>% 
+  reshape2::melt(id.vars = c("cells", "pseudotime", "UMAP_1", "UMAP_2", "sg.cell.types")) %>% 
+  group_by(variable) %>% 
+  mutate(scaled_mean_value = scale(value))
+
+ggplot(mat %>% mutate(variable = factor(variable, levels = c("BATF", "TNFRSF18", "IRF4", "FOXP1", "TCF7"))), aes(x = pseudotime, y = scaled_mean_value)) + 
+  geom_smooth(aes(color=variable, fill=variable), method = "loess", formula = y ~ x, span = 0.35, se = TRUE, linewidth = 1.2, alpha = 0.18) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 22, hjust = 0.5),
+    axis.text = element_text(size =18, color="black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 18),
+    strip.text = element_text(size=18),
+    legend.position = "top",
+    axis.ticks = element_line(color = "black"),
+    axis.line = element_line(color = "black")
+  ) +
+  labs(
+    x="Pseudotime",
+    y="Scaled gene expression"
+  ) +
+  scale_color_manual(values=c("FOXP1" = "lightseagreen", "IRF4" = "lightblue4", "BATF" = "firebrick", "TCF7" = "gold1", "TNFRSF18" = "darkorchid4")) +
+  scale_fill_manual(values=c("FOXP1" = "lightseagreen", "IRF4" = "lightblue4", "BATF" = "firebrick", "TCF7" = "gold1", "TNFRSF18" = "darkorchid4")) +
+  guides(fill=guide_legend(nrow = 2),
+         color=guide_legend(nrow = 2))
+ggsave("plots/PBMC/Les_PBMC_recluster_pseudotime_genes_FOXP1.pdf", dpi=320, width = 5, height = 8)
+
+```
+
+# ============================================================
+# Fig 2L-M
+# ============================================================
+```{r}
+library(CATALYST)
+
+sce = readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/RDS objects/PID_flow_sce.RDS")
+
+plotDR(sce, "UMAP", color_by = c("FOXP3","CD45RA","CD39", "CCR7", "Ki67", "PD-1")) +
+  scale_fill_viridis_c(option = "magma") +
+  theme_minimal() + theme(
+  axis.text = element_blank(),
+  strip.text = element_text(color = "black", size = 24),
+  axis.title = element_text(color = "black", size = 26),
+   panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+  legend.text = element_text(color="black", size = 17),
+  legend.title = element_blank()
+          ) +
+  labs(
+    x="UMAP_1",
+    y="UMAP_2"
+  )
+
+cluster_plot = 'ClusterID'
+
+as_tibble(colData(sce)) %>% 
+  left_join(
+    as_tibble(sce@metadata[["cluster_codes"]]) %>% select(som100, cluster_plot),
+    by = c('cluster_id' = 'som100')
+  ) %>% 
+  select(-cluster_id) -> colData_tibble
+
+umap.coords = reducedDim(sce, 'UMAP')
+umap.coords.isNotAa = !is.na(umap.coords[, 1])
+
+colData_tibble1 <- colData_tibble %>% mutate(
+  ID_format = case_when(
+    ClusterID == "CD4.NAIVE" ~ "Naive",
+    ClusterID == "CD4.TCM.CD38lo"~ '"Tcm"^"CD38lo"',
+    ClusterID == "CD4.TCM.CD38int" ~ '"Tcm"^"CD38int"',
+    ClusterID == "CD4.TCM.prolif.HLA-DRlo" ~ '"Tcm"^"prolifHLA-DRlo"',
+    ClusterID == "CD4.TCM.prolif.HLA-DRhi" ~ '"Tcm"^"prolifHLA-DRhi"',
+    ClusterID == "CD4.TEM.CCR7int" ~ '"Tem"^"CCR7int"',
+    ClusterID == "CD4.TEM.CD27lo" ~ '"Tem"^"CD27lo"',
+    ClusterID == "CD4.TEM.CD27hi" ~ '"Tem"^"CD27hi"',
+    ClusterID == "TREG.prolif" ~ '"Treg"^"prolif"',
+    ClusterID == "TREG.CD39lo.CD38int" ~ '"Treg"^"CD39loCD38int"',
+    ClusterID == "TREG.CD39hi.CD38lo" ~ '"Treg"^"CD39hiCD38lo"',
+    ClusterID == "TREG.CD39hi.CD38int" ~ '"Treg"^"CD39hiCD38int"',
+    ClusterID == "CD4.TEM.prolif" ~ '"Tem"^"prolif"',
+    ClusterID == "CD4.TEX.prolif" ~ '"Tex"^"prolif"', 
+    ClusterID == "CD4.TEX" ~ "Tex",
+    ClusterID == "Cytotoxic.TEMRA" ~ '"Cytotoxic"^"Temra"',
+    ClusterID == "Cytotoxic" ~ "Cytotoxic"
+  )
+)
+colData_tibble1$ID_format <- factor(colData_tibble1$ID_format, levels = c("Naive", '"Tcm"^"CD38lo"', '"Tcm"^"CD38int"',
+                                                                          '"Tcm"^"prolifHLA-DRlo"','"Tcm"^"prolifHLA-DRhi"','"Tem"^"CCR7int"',
+                                                                          '"Tem"^"CD27lo"','"Tem"^"CD27hi"','"Treg"^"prolif"',
+                                                                          '"Treg"^"CD39loCD38int"','"Treg"^"CD39hiCD38lo"',
+                                                                          '"Treg"^"CD39hiCD38int"','"Tem"^"prolif"','"Tex"^"prolif"', "Tex",
+                                                                          '"Cytotoxic"^"Temra"', "Cytotoxic"))
+
+sig_tbl <- volcano_patient |>
+  transmute(
+    ClusterID = cluster_id,
+    log2FC,
+    p_value,
+    fdr,
+    sig_class = case_when(
+      fdr < 0.05 & log2FC > 0 ~ "q<0.05 High-grade",
+      p_value < 0.05 & fdr >= 0.05 & log2FC > 0 ~ "p<0.05 High-grade",
+      fdr < 0.05 & log2FC < 0 ~ "q<0.05 Low-grade",
+      p_value < 0.05 & fdr >= 0.05 & log2FC < 0 ~ "p<0.05 Low-grade",
+      TRUE ~ "NS"
+    )
+  )
+
+colData_tibble2 <- colData_tibble1 |>
+  left_join(sig_tbl, by = "ClusterID") |>
+  mutate(
+    sig_class = replace_na(sig_class, "NS"),
+    sig_class = factor(
+      sig_class,
+      levels = c(
+        "q<0.05 High-grade",
+        "p<0.05 High-grade",
+        "q<0.05 Low-grade",
+        "p<0.05 Low-grade",
+        "NS"
+      )
+    )
+  )
+
+plot_df <- colData_tibble2[umap.coords.isNotAa, ] %>%
+  as_tibble() %>%
+  mutate(
+    UMAP1 = umap.coords[,1][umap.coords.isNotAa],
+    UMAP2 = umap.coords[,2][umap.coords.isNotAa]
+  )
+
+label_df <- plot_df %>%
+  dplyr::filter(sig_class != "NS") %>%
+  dplyr::group_by(ClusterID, ID_format, sig_class) %>%
+  dplyr::summarise(
+    UMAP1 = median(UMAP1),
+    UMAP2 = median(UMAP2),
+    .groups = "drop"
+  )
+
+p_umap_da <- plot_df %>%
+  ggplot(aes(UMAP1, UMAP2)) +
+  ggrastr::rasterise(
+    geom_point(
+      aes(fill = sig_class),
+      color = "black",
+      size = 3,
+      pch = 21,
+      stroke = 0.2
+    ),
+    dpi = 600
+  ) +
+  ggrastr::rasterise(
+    geom_point(
+      data = label_df,
+      aes(UMAP1, UMAP2),
+      color = "black",
+      size = 2
+    ),
+    dpi = 600
+  ) +
+  geom_label_repel(
+    data = label_df,
+    aes(UMAP1, UMAP2, label = ID_format, color = sig_class),
+    size = 7,
+    max.overlaps = 10,
+    parse = TRUE,
+    label.size = 2.5,
+    force = 400,
+    show.legend = FALSE,
+    seed = 111
+  ) +
+  geom_label_repel(
+    data = label_df,
+    aes(UMAP1, UMAP2, label = ID_format),
+    size = 7,
+    max.overlaps = 10,
+    parse = TRUE,
+    color = "black",
+    label.size = NA,
+    force = 400,
+    show.legend = FALSE,
+    seed = 111
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_text(color = "black", size = 26),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(color = "black", size = 14),
+    legend.title = element_blank(),
+    plot.margin = margin(15, 150, 15, 150),
+    legend.position = "none"
+  ) +
+  labs(
+    x = "UMAP_1",
+    y = "UMAP_2"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "q<0.05 High-grade" = "#c61f1f",
+      "p<0.05 High-grade" = "#f4a3a3",
+      "q<0.05 Low-grade" = "#1874d2",
+      "p<0.05 Low-grade" = "#8fc2ff",
+      "NS" = "grey55"
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "q<0.05 High-grade" = "#c61f1f",
+      "p<0.05 High-grade" = "#f4a3a3",
+      "q<0.05 Low-grade" = "#1874d2",
+      "p<0.05 Low-grade" = "#8fc2ff",
+      "NS" = "grey55"
+    )
+  )
+
+p_umap_da <- p_umap_da +
+  annotate("text", x = min(plot_df$UMAP1), y = max(plot_df$UMAP2),
+           label = "Cluster enrichment:",
+           hjust = 0, vjust = 1, size = 7, color = "black") +
+  annotate("text", x = min(plot_df$UMAP1), y = max(plot_df$UMAP2) - 0.6,
+           label = "FDR<0.05 High-grade",
+           hjust = 0, vjust = 1, size = 6, color = "#c61f1f") +
+  annotate("text", x = min(plot_df$UMAP1), y = max(plot_df$UMAP2) - 1.1,
+           label = "p<0.05 High-grade",
+           hjust = 0, vjust = 1, size = 6, color = "#f4a3a3") +
+  annotate("text", x = min(plot_df$UMAP1), y = max(plot_df$UMAP2) - 1.6,
+           label = "FDR<0.05 Low-grade",
+           hjust = 0, vjust = 1, size = 6, color = "#1874d2") +
+  annotate("text", x = min(plot_df$UMAP1), y = max(plot_df$UMAP2) - 2.1,
+           label = "p<0.05 Low-grade",
+           hjust = 0, vjust = 1, size = 6, color = "#8fc2ff")
+
+
+ggsave(
+  "Fig2M.pdf",
+  plot = p_umap_da,
+  width = 11,
+  height = 7,
+  device = cairo_pdf
+)
+
+```
+
+# ============================================================
+# Fig 2N
+# ============================================================
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+
+# ----------------------------
+# 0) Paths and input
+# ----------------------------
+freq_file <- "E:/Sam Gamble/Flow cytometry clustering/PID/CD4 - CPM 107/107PID_CD4_cluster_freqs.csv"
+meta_file <- "E:/Sam Gamble/PID/Files/PID_68_samples_231122.csv"
+
+cd4_clus <- read.csv(
+  freq_file,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+md <- read.csv(
+  meta_file,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+# ----------------------------
+# 1) Long format sample-level table
+# ----------------------------
+freq_long <- cd4_clus |>
+  rename(JR_code = 1) |>
+  pivot_longer(
+    cols = -JR_code,
+    names_to = "cluster_id",
+    values_to = "freq"
+  ) |>
+  left_join(
+    md |>
+      select(JR_code, patient_id, lesion_grade),
+    by = "JR_code"
+  ) |>
+  drop_na(patient_id, lesion_grade) |>
+  filter(lesion_grade %in% c("low_grade", "high_grade")) |>
+  mutate(
+    lesion_grade = factor(lesion_grade, levels = c("low_grade", "high_grade")),
+    patient_id = factor(patient_id)
+  )
+
+stopifnot(all(c("JR_code", "patient_id", "lesion_grade", "cluster_id", "freq") %in% colnames(freq_long)))
+
+# ----------------------------
+# 2) Aggregate to patient-level mean frequency
+# ----------------------------
+patient_cluster <- freq_long |>
+  group_by(patient_id, lesion_grade, cluster_id) |>
+  summarise(
+    mean_freq_patient = mean(freq, na.rm = TRUE),
+    n_samples_patient = dplyr::n(),
+    .groups = "drop"
+  )
+
+# ----------------------------
+# 3) Effect size for x-axis
+#    log2FC of mean patient-level frequency (HG / LG)
+# ----------------------------
+eps <- 1e-6
+
+mean_props_patient <- patient_cluster |>
+  group_by(lesion_grade, cluster_id) |>
+  summarise(
+    mean_freq = mean(mean_freq_patient, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  pivot_wider(names_from = lesion_grade, values_from = mean_freq) |>
+  mutate(
+    log2FC = log2((high_grade + eps) / (low_grade + eps)),
+    mean_cluster_frequency = (high_grade + low_grade) / 2
+  )
+
+# ----------------------------
+# 4) Per-cluster patient-level tests
+#    Primary: Wilcoxon
+#    Optional: Welch t-test too
+# ----------------------------
+patient_tests <- patient_cluster |>
+  group_by(cluster_id) |>
+  summarise(
+    p_value_wilcox = wilcox.test(mean_freq_patient ~ lesion_grade, exact = FALSE)$p.value,
+    p_value_t = t.test(mean_freq_patient ~ lesion_grade)$p.value,
+    .groups = "drop"
+  ) |>
+  mutate(
+    fdr_wilcox = p.adjust(p_value_wilcox, method = "BH"),
+    fdr_t = p.adjust(p_value_t, method = "BH")
+  )
+
+# choose which one to plot as primary
+volcano_patient <- mean_props_patient |>
+  left_join(patient_tests, by = "cluster_id") |>
+  mutate(
+    p_value = p_value_wilcox,
+    fdr = fdr_wilcox,
+    neglog10fdr = -log10(fdr),
+    sig = case_when(
+      fdr < 0.05 ~ "FDR < 0.05",
+      fdr < 0.1  ~ "0.05 ≤ FDR < 0.1",
+      TRUE       ~ "FDR ≥ 0.1"
+    ),
+    sig = factor(sig, levels = c("FDR < 0.05", "0.05 ≤ FDR < 0.1", "FDR ≥ 0.1"))
+  )
+
+# ----------------------------
+# 5) Labels
+# ----------------------------
+label_tbl <- tibble(
+  cluster_id = c(
+    "CD4.NAIVE",
+    "CD4.TCM.CD38lo",
+    "CD4.TCM.CD38int",
+    "CD4.TCM.prolif.HLA-DRlo",
+    "CD4.TCM.prolif.HLA-DRhi",
+    "CD4.TEM.CCR7int",
+    "CD4.TEM.CD27lo",
+    "CD4.TEM.CD27hi",
+    "TREG.prolif",
+    "TREG.CD39lo.CD38int",
+    "TREG.CD39hi.CD38lo",
+    "TREG.CD39hi.CD38int",
+    "CD4.TEM.prolif",
+    "CD4.TEX.prolif",
+    "CD4.TEX",
+    "Cytotoxic.TEMRA",
+    "Cytotoxic"
+  ),
+  label_parsed = c(
+    "Naive",
+    '"Tcm"^"CD38lo"',
+    '"Tcm"^"CD38int"',
+    '"Tcm"^"prolifHLA-DRlo"',
+    '"Tcm"^"prolifHLA-DRhi"',
+    '"Tem"^"CCR7int"',
+    '"Tem"^"CD27lo"',
+    '"Tem"^"CD27hi"',
+    '"Treg"^"prolif"',
+    '"Treg"^"CD39loCD38int"',
+    '"Treg"^"CD39hiCD38lo"',
+    '"Treg"^"CD39hiCD38int"',
+    '"Tem"^"prolif"',
+    '"Tex"^"prolif"',
+    "Tex",
+    '"Cytotoxic"^"Temra"',
+    "Cytotoxic"
+  )
+)
+
+volcano_patient <- volcano_patient |>
+  left_join(label_tbl, by = "cluster_id")
+
+# ----------------------------
+# 6) Plot, patient-level primary analysis
+# ----------------------------
+p_patient <- ggplot(volcano_patient, aes(x = log2FC, y = neglog10fdr)) +
+  geom_point(
+    aes(size = mean_cluster_frequency, fill = sig),
+    shape = 21, colour = "black", stroke = 0.8, alpha = 0.95
+  ) +
+  geom_text_repel(
+    aes(label = label_parsed),
+    parse = TRUE,
+    size = 7,
+    max.overlaps = 30,
+    force = 20,
+    box.padding = 0.4,
+    point.padding = 0.25,
+    segment.color = "grey40",
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = c(
+      "FDR < 0.05" = "firebrick",
+      "0.05 ≤ FDR < 0.1" = "indianred",
+      "FDR ≥ 0.1" = "black"
+    )
+  ) +
+  scale_size(range = c(4, 16)) +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed", colour = "blue", alpha = 0.6) +
+  geom_hline(yintercept = -log10(0.1), linetype = "dotted", colour = "blue", linewidth = 0.8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "blue", linewidth = 0.8) +
+  theme_minimal(base_size = 18) +
+  theme(
+    panel.background = element_rect(fill = "white", colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(colour = "black", size = 18),
+    axis.title = element_text(size = 22),
+    axis.ticks = element_line(colour = "black", linewidth = 0.7),
+    axis.ticks.length = unit(0.1, "cm"),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16)
+  ) +
+  labs(
+    x = "Log2(FC) of mean patient-level cluster frequency (high-grade / low-grade)",
+    y = expression(-Log[10]~"(FDR) [patient-level Wilcoxon]"),
+    fill = "Significance",
+    size = "Mean cluster\nfrequency"
+  ) +
+  guides(
+    fill = guide_legend(order = 1),
+    size = guide_legend(order = 2)
+  )
+
+p_patient
+
+ggsave("Fig2N.pdf", plot = p_patient, dpi = 320, width = 9, height = 7)
+
+# ----------------------------
+# 7) Output tables
+# ----------------------------
+volcano_patient |>
+  arrange(fdr, p_value) |>
+  select(cluster_id, label, log2FC, p_value, fdr, mean_cluster_frequency, sig) |>
+  print(n = Inf)
+```
+# ============================================================
+# Fig 2P
+# ============================================================
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(rio)
+library(tibble)
+library(lmerTest)
+library(emmeans)
+
+# sample-level data
+treg_39mg <- rio::import("E:/Sam Gamble/PID/Files/PID_RAneg_39pos_foxpos_final_freqs.xlsx") |>
+  as_tibble() |>
+  dplyr::select(1:4) |>
+  dplyr::rename(treg_39 = `CD45RA-FoxP3+CD39+`) |>
+  dplyr::mutate(
+    patient_id = factor(patient_id),
+    Grade = factor(Grade, levels = c("low", "high")),
+    log10_treg_39 = log10(treg_39)
+  )
+
+# LME
+mod_treg39 <- lmer(
+  log10_treg_39 ~ Grade + (1 | patient_id),
+  data = treg_39mg
+)
+
+emm_treg39 <- emmeans(mod_treg39, ~ Grade)
+
+contrast_df <- summary(
+  contrast(emm_treg39, method = list("high - low" = c(-1, 1)))
+) |>
+  as.data.frame() |>
+  mutate(
+    p_one_sided = pt(t.ratio, df = df, lower.tail = FALSE),
+    p_label = paste0("LME, p = ", signif(p.value, 2))
+  )
+
+p_lab <- contrast_df$p_label[1]
+
+ggplot(treg_39mg, aes(x = Grade, y = treg_39)) +
+  geom_boxplot(
+    fill = "white",
+    colour = "black",
+    alpha = 1,
+    outlier.shape = NA,
+    width = 0.6
+  ) +
+  geom_jitter(
+    aes(fill = Grade),
+    width = 0.15,
+    size = 3,
+    alpha = 0.9,
+    shape = 21,
+    colour = "black"
+  ) +
+  annotate(
+    "text",
+    x = 1.5,
+    y = 12.5,
+    label = p_lab,
+    size = 5
+  ) +
+  theme_classic() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16),
+    axis.text.x = element_text(size = 14, angle = 45, hjust = 1, colour = "black"),
+    axis.text.y = element_text(size = 14, colour = "black"),
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = c("low" = "dodgerblue3", "high" = "firebrick")) +
+  labs(
+    y = bquote("%" ~ Treg^"CD45RA"^"-" ~ ""^CD39^"+" ~ " of CD4")
+  ) +
+  scale_y_continuous(
+    limits = c(0.8, 13),
+    expand = expansion(mult = c(0.01, 0.03)),
+    trans = "log10"
+  ) +
+  scale_x_discrete(labels = c("low" = "Low", "high" = "High"))
+
+```
+
+
+# ============================================================
+# Fig 2Q
+# ============================================================
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(rio)
+library(logistf)
+
+# --- Helper: Robust P-Value Formatter ---
+format_p_value <- function(p_value) {
+  if (is.na(p_value)) return("") 
+  if (p_value == 0) return("p = 0")
+  if (p_value < 0.001) return(sprintf("p = %0.2e", p_value))
+  return(sprintf("p = %0.3f", p_value))
+}
+
+# ---------------------------------------------------------------------------
+# 1. PID COHORT: DATA PREP & MVA
+# ---------------------------------------------------------------------------
+age <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/PID/Files/PID_107_ages.xlsx") %>% as_tibble()
+pid107 <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/PID/Files/PID_107_samples_231122.xlsx") %>% as_tibble()
+cd <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/PID/Files/PID_68_cancer_diagnosis_231122.xlsx") %>% 
+  as_tibble() %>% dplyr::select(-any_of("JR_code")) %>% dplyr::rename(JR_code = JR_code1)
+
+clinical_all <- cd[,c("patient_id", "JR_code", "cancer_before_any")] %>% 
+  left_join(pid107 %>% dplyr::select(patient_id, JR_code, lesion_grade, Date, Sex_L4L, pack_years), by = c("patient_id", "JR_code")) %>% 
+  left_join(age, by = c("patient_id", "Date")) %>% 
+  mutate(lesion_grade = factor(lesion_grade, levels = c("low_grade", "high_grade")))
+
+sex <- clinical_all[!duplicated(clinical_all$patient_id),] %>% dplyr::select(patient_id, Sex_L4L)
+py <- clinical_all %>% group_by(patient_id) %>% arrange(desc(Date)) %>% dplyr::slice(1) %>% dplyr::select(patient_id, cancer_before_any)
+
+treg_39mg <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/PID/Files/PID_RAneg_39pos_foxpos_final_freqs.xlsx") %>% 
+  as_tibble() %>% dplyr::rename(treg_39_mg = `CD45RA-FoxP3+CD39+`)
+
+treg_39mgp <- treg_39mg %>% group_by(patient_id) %>% summarise(treg_39_mg = mean(treg_39_mg, na.rm = TRUE))
+
+pid_final_df <- clinical_all %>% 
+  group_by(patient_id) %>% 
+  summarise(pack_years_mean = mean(pack_years, na.rm = TRUE),
+            age_mean = mean(age, na.rm = TRUE),
+            lesion_grade = dplyr::first(lesion_grade)) %>% 
+  full_join(sex, by = "patient_id") %>% 
+  full_join(py, by = "patient_id") %>% 
+  full_join(treg_39mgp, by = "patient_id") %>% 
+  dplyr::mutate(outcome = ifelse(lesion_grade == "low_grade", 0, 1)) %>%
+  tidyr::drop_na(outcome, treg_39_mg)
+
+# SCALING STEP: Create a scaled version for the model
+pid_final_df_scaled <- pid_final_df %>%
+  mutate(across(c(treg_39_mg, pack_years_mean, age_mean), ~ as.numeric(scale(.))))
+
+# Run Firth's MVA (PID)
+pid_mg_mod <- logistf(outcome ~ treg_39_mg + pack_years_mean + cancer_before_any + age_mean, data = pid_final_df_scaled)
+
+# Plot Prep
+pid_plot_data <- data.frame(
+  vars = names(pid_mg_mod$coefficients),
+  Coefficient = exp(pid_mg_mod$coefficients),
+  Lower_CI = exp(pid_mg_mod$ci.lower),
+  Upper_CI = exp(pid_mg_mod$ci.upper),
+  P_Value = pid_mg_mod$prob
+) %>% 
+  dplyr::filter(vars != "(Intercept)") %>% 
+  mutate(rounded_p = sapply(P_Value, format_p_value),
+         # Add rev() here:
+         vars = factor(vars, levels = rev(c("treg_39_mg", "age_mean", "pack_years_mean", "cancer_before_anyY"))))
+
+# Update 1: Add rev() to the factor levels
+pid_plot_data <- data.frame(
+  vars = names(pid_mg_mod$coefficients),
+  Coefficient = exp(pid_mg_mod$coefficients),
+  Lower_CI = exp(pid_mg_mod$ci.lower),
+  Upper_CI = exp(pid_mg_mod$ci.upper),
+  P_Value = pid_mg_mod$prob
+) %>% 
+  dplyr::filter(vars != "(Intercept)") %>% 
+  mutate(rounded_p = sapply(P_Value, format_p_value),
+         # Add rev() here:
+         vars = factor(vars, levels = rev(c("treg_39_mg", "age_mean", "pack_years_mean", "cancer_before_anyY"))))
+
+# Update 2: Use a named vector for scale_fill_manual
+pid_forest_plot <- ggplot(pid_plot_data, aes(x=vars, y=as.numeric(Coefficient), fill = vars)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray67") +
+  geom_pointrange(shape = 21, aes(ymin=as.numeric(Lower_CI), ymax = as.numeric(Upper_CI)), size = 2.5, color="black") +
+  # Turn off clipping so labels don't get chopped
+  coord_flip(clip = "off") + 
+  theme_minimal() +
+  scale_fill_manual(values = c("treg_39_mg" = "gold", "age_mean" = "black", "pack_years_mean" = "navajowhite", "cancer_before_anyY" = "white")) +
+  scale_x_discrete(labels = c("treg_39_mg" = bquote(Treg^"CD45RA"^"-"~""^"CD39"^"+"), 
+                              "age_mean" = "Age (per SD)", 
+                              "pack_years_mean" = "Pack years (per SD)", 
+                              "cancer_before_anyY" = "Prior cancer")) +
+  # ADDED LOG10 AND EXPANDED UPPER LIMIT FOR P-VALUES:
+  scale_y_continuous(trans = "log10", expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = NULL, y = "Odds ratio (Standardized, log scale)", title = "High-grade lesion risk") +
+  geom_text(aes(label = rounded_p, y = Inf), position = position_nudge(x = 0.4), size = 7, hjust = 1) + 
+  theme(axis.text = element_text(size = 26, color="black"), 
+        axis.title.x = element_text(size = 30), 
+        plot.title = element_text(size = 28, face="bold", hjust=0.5), 
+        legend.position = 'none',
+        plot.margin = margin(1, 1, 1, 1, "cm")) # Extra margin just in case
+
+print(pid_forest_plot)
+
+# ---------------------------------------------------------------------------
+# 2. ASCENT COHORT: DATA PREP & MVA
+# ---------------------------------------------------------------------------
+quad <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/ASCENT/Files/ASC_MG_RAneg_39pos_foxpos.xlsx") %>% as_tibble()
+controls <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/ASCENT/TCR/Files/controls_demographics.xlsx") %>% 
+  as_tibble() %>% dplyr::select(patient_id, `Age of patient at sample collection`, `Biological Sex`, smoking_status) %>% 
+  dplyr::rename(Age = `Age of patient at sample collection`, Gender = `Biological Sex`)
+
+md_ascent <- rio::import("/Volumes/UCL_CI_HD1/CI/PhD/ASCENT/Files/ASCENT_clinical_300623_flow.xlsx") %>% 
+  as_tibble() %>% dplyr::select(patient_id, Age, Gender, `Smoking status`) %>% 
+  dplyr::rename(smoking_status = `Smoking status`) %>% rbind(controls)
+
+treg_mva_asc <- quad %>% 
+  dplyr::filter(Diagnosis != "Benign") %>% 
+  dplyr::rename(treg_39_mg = `CD45RA-FoxP3+CD39+`) %>% 
+  left_join(md_ascent, by = "patient_id") %>% 
+  mutate(outcome = ifelse(Diagnosis == "Healthy", 0, 1),
+         smoking_binary = factor(ifelse(smoking_status %in% c("never", "unknown", "non-smoker"), "Never", "Ever"), levels = c("Never", "Ever"))) %>% 
+  na.omit()
+
+# SCALING STEP: Create a scaled version for the model
+treg_mva_asc_scaled <- treg_mva_asc %>%
+  mutate(across(c(treg_39_mg, Age), ~ as.numeric(scale(.))))
+
+asc_mg_mod <- logistf(outcome ~ treg_39_mg + Age + Gender + smoking_binary, data = treg_mva_asc_scaled)
+
+asc_plot_data <- data.frame(
+  vars = names(asc_mg_mod$coefficients),
+  Coefficient = exp(asc_mg_mod$coefficients),
+  Lower_CI = exp(asc_mg_mod$ci.lower),
+  Upper_CI = exp(asc_mg_mod$ci.upper),
+  P_Value = asc_mg_mod$prob
+) %>% 
+  dplyr::filter(vars != "(Intercept)") %>% 
+  mutate(rounded_p = sapply(P_Value, format_p_value),
+         # Add rev() here:
+         vars = factor(vars, levels = rev(c("treg_39_mg", "Age", "GenderMale", "smoking_binaryEver"))))
+
+# Plot Fig S5D 
+asc_forest_plot <- ggplot(asc_plot_data, aes(x=vars, y=as.numeric(Coefficient), fill = vars)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray67") +
+  geom_pointrange(shape = 21, aes(ymin=as.numeric(Lower_CI), ymax = as.numeric(Upper_CI)), size = 2.5, color="black") +
+  # Turn off clipping
+  coord_flip(clip = "off") + 
+  theme_minimal() +
+  scale_fill_manual(values = c("treg_39_mg" = "white", "Age" = "gold", "GenderMale" = "dodgerblue3", "smoking_binaryEver" = "black")) +
+  scale_x_discrete(labels = c("treg_39_mg" = bquote("Treg"^"CD45RA"^"-"~""^"CD39"^"+"), 
+                              "Age" = "Age (per SD)", 
+                              "GenderMale" = "Male", 
+                              "smoking_binaryEver" = "Ever Smoker")) +
+  # EXPANDED UPPER LIMIT FOR P-VALUES:
+  scale_y_continuous(trans = "log10", expand = expansion(mult = c(0.05, 0.6))) +
+  labs(x = NULL, y = "Odds ratio (Standardized, log scale)", title = "NSCLC risk") +
+  geom_text(aes(label = rounded_p, y = Inf), position = position_nudge(x = 0.4), size = 7, hjust = 1) + 
+  theme(axis.text = element_text(size = 26, color="black"), 
+        axis.title.x = element_text(size = 30), 
+        plot.title = element_text(size = 28, face="bold", hjust=0.5), 
+        legend.position = 'none',
+        plot.margin = margin(1, 1, 1, 1, "cm"))
+
+print(asc_forest_plot)
+
+# ---------------------------------------------------------------------------
+# 3. REVISED BOX-WHISKER PLOTS (COVARIATE-CENTRIC)
+# ---------------------------------------------------------------------------
+
+# Y-Axis Label
+treg_lab <- bquote("Treg"^"CD45RA"^"-"~""^"CD39"^"+"~"of CD4")
+
+# --- 3A. Prepare Categorical Versions of Continuous Vars ---
+# (Keeping the median split logic for Age and Pack Years)
+pid_final_df <- pid_final_df %>% 
+  mutate(
+    outcome_label = factor(outcome, levels = c(0, 1), labels = c("Low-grade", "High-grade")),
+    age_group = ifelse(age_mean > median(age_mean, na.rm=T), "Age > Median", "Age < Median"),
+    py_group = ifelse(pack_years_mean > median(pack_years_mean, na.rm=T), "PY > Median", "PY < Median")
+  )
+
+treg_mva_asc <- treg_mva_asc %>% 
+  mutate(
+    outcome_label = factor(outcome, levels = c(0, 1), labels = c("Healthy", "NSCLC")),
+    age_group = ifelse(Age > median(Age, na.rm=T), "Old", "Young")
+  )
+
+# --- 3B. Revised Universal Plotting Function ---
+make_covariate_plot <- function(df, x_var, color_var, title, point_colors) {
+  ggplot(df, aes(x = .data[[x_var]], y = treg_39_mg)) +
+    # Neutral boxplots to keep focus on the colored dots
+    geom_boxplot(outlier.shape = NA, fill = "gray95", color = "gray30", width = 0.6) +
+    # Dots colored by clinical outcome (Grade or NSCLC status)
+    geom_jitter(aes(color = .data[[color_var]]), width = 0.2, alpha = 0.7, size = 1.5) +
+    # Wilcoxon test comparing the two categories on the X-axis
+    stat_compare_means(method = "wilcox.test", 
+                       label = "p.format", 
+                       label.x = 1.5,
+                       size = 5) +
+    scale_color_manual(values = point_colors) +
+    scale_y_log10() +
+    labs(title = title, x = NULL, y = treg_lab, color = "Status") +
+    theme_minimal() +
+    theme(legend.position = "right",
+          plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+          axis.text.x = element_text(size = 11, color = "black", face = "bold"))
+}
+
+# --- 3C. Define Palettes & Generate Plots ---
+# UCLH Palette
+pid_pts <- c("Low-grade" = "gray60", "High-grade" = "gold")
+p1 <- make_covariate_plot(pid_final_df, "age_group", "outcome_label", "UCLH: Age", pid_pts)
+p2 <- make_covariate_plot(pid_final_df, "py_group", "outcome_label", "UCLH: Pack Years", pid_pts)
+p3 <- make_covariate_plot(pid_final_df, "Sex_L4L", "outcome_label", "UCLH: Sex", pid_pts)
+p4 <- make_covariate_plot(pid_final_df, "cancer_before_any", "outcome_label", "UCLH: Prior Ca", pid_pts)
+
+# ASCENT Palette
+asc_pts <- c("Healthy" = "gray60", "NSCLC" = "dodgerblue3")
+p5 <- make_covariate_plot(treg_mva_asc, "age_group", "outcome_label", "ASCENT: Age", asc_pts)
+p6 <- make_covariate_plot(treg_mva_asc, "Gender", "outcome_label", "ASCENT: Sex", asc_pts)
+p7 <- make_covariate_plot(treg_mva_asc, "smoking_binary", "outcome_label", "ASCENT: Smoking", asc_pts)
+
+# --- 3D. Final Assembly ---
+pid_row <- ggpubr::ggarrange(p1, p2, p3, p4, ncol = 4, common.legend = TRUE, legend = "right")
+ascent_row <- ggpubr::ggarrange(p5, p6, p7, ncol = 3, common.legend = TRUE, legend = "right")
+
+final_panel <- ggpubr::ggarrange(pid_row, ascent_row, nrow = 2)
+print(final_panel)
+
+# Save PID forest plot
+ggsave(filename = "/Users/Petros/Downloads/pid_forest_plot.pdf", 
+       plot = pid_forest_plot, 
+       width = 12, height = 8, device = "pdf")
+
+# Save ASCENT forest plot
+ggsave(filename = "/Users/Petros/Downloads/asc_forest_plot.pdf", 
+       plot = asc_forest_plot, 
+       width = 12, height = 8, device = "pdf")
+
+
+
+
+```
