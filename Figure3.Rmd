@@ -14,7 +14,7 @@ date: "2026-01-14"
 # ============================================================
 
 ```{r}
-quad <- rio::import("E:/Sam Gamble/ASCENT/Files/ASC_MG_RAneg_39pos_foxpos.xlsx") %>% 
+quad <- rio::import("ASC_MG_RAneg_39pos_foxpos.xlsx") %>% 
   as_tibble()
 
 treg_39mg <- quad %>% 
@@ -68,7 +68,7 @@ library(ggrepel)
 # 1) Load saved cluster frequencies
 # =========================================================
 props_wide <- read.csv(
-  "E:/Sam Gamble/Lung_explants/PDTFs_cluster_freqs_190325.csv",
+  "PDTFs_cluster_freqs_190325.csv",
   check.names = FALSE,
   stringsAsFactors = FALSE
 )
@@ -81,7 +81,7 @@ names(props_wide)[1] <- "file_name"
 #    - fix ASC353 tissue annotation
 # =========================================================
 md <- read.csv(
-  "E:/Sam Gamble/Flow cytometry clustering/PDTF_190325/metafile_all.csv",
+  "metafile_all.csv",
   stringsAsFactors = FALSE
 ) |>
   as_tibble() |>
@@ -560,8 +560,8 @@ km_plot <- function(surv_object, palette_colors, x_label, y_label, legend_labels
 }
 
 # 3. Set the Base Drive Path & Output
-drive_path <- "/Volumes/T7/Sam Gamble"
-plot_out   <- "~/Desktop/ASCENT_Interaction_Median_Final.pdf"
+drive_path <- ""
+plot_out   <- "ASCENT_Interaction_Median_Final.pdf"
 
 # 4. Load and Normalize RNAseq Data (Batch 1 & 2 Merge)
 message("--- Loading and Normalizing RNAseq Data ---")
@@ -820,7 +820,7 @@ library(rstatix)
 # ----------------------------
 # 0) Load object
 # ----------------------------
-ascent <- readRDS("E:/Sam Gamble/ASCENT/CD4_sc/RDS/Tregs_ASCENT-TS270824.rds")
+ascent <- readRDS("Tregs_ASCENT-TS270824.rds")
 DefaultAssay(ascent) <- "RNA"
 
 # ----------------------------
@@ -1097,15 +1097,15 @@ suppressPackageStartupMessages({
 # 1. Input paths (Updated for /Volumes/T7 mount)
 # =============================================================================
 
-PATH_MD <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/Files/ASCENT_wSUMMIT_md.csv"
+PATH_MD <- "/ASCENT/TCR/Files/ASCENT_wSUMMIT_md.csv"
 
-PATH_OVERLAP_BATCH1 <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/mixcr_wSUMMIT_output_batch1/ASCENT_wSUMMIT_tumour_blood_overlap_batch1_180724.csv"
+PATH_OVERLAP_BATCH1 <- "/ASCENT/TCR/mixcr_wSUMMIT_output_batch1/ASCENT_wSUMMIT_tumour_blood_overlap_batch1_180724.csv"
 
-PATH_TREG_METADATA <- "/Volumes/T7/Sam Gamble/ASCENT/Files/met_withssGSEA_TregSubsets_ASCENT-TS300824.csv"
+PATH_TREG_METADATA <- "/ASCENT/Files/met_withssGSEA_TregSubsets_ASCENT-TS300824.csv"
 
 SAVE_PLOT <- FALSE
 # Updated output path to match the new volume mount
-OUT_PDF <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/SUMMIT_batch1_cell_type/Treg/treg_subset_fc_vs_Y0_standalone.pdf"
+OUT_PDF <- "/ASCENT/TCR/SUMMIT_batch1_cell_type/Treg/treg_subset_fc_vs_Y0_standalone.pdf"
 
 # =============================================================================
 # 2. Small helper functions
