@@ -2221,7 +2221,7 @@ library(emmeans)
 # -----------------------------
 # 1. Read and clean data
 # -----------------------------
-df <- read.delim("C:/Users/andre/Downloads/Treg_TV_freq 1.txt", check.names = FALSE)
+df <- read.delim("Treg_TV_freq 1.txt", check.names = FALSE)
 colnames(df) <- c("Sample", "freq", "Timepoint", "Treatment")
 
 anova_df <- df |>
@@ -2282,7 +2282,7 @@ lung <- read.csv(
 # 2) CD62Llo lung Tregs
 # ----------------------------
 cd62l_neg <- read.delim(
-  "C:/Users/andre/Downloads/Treg_CD62Lneg.txt",
+  "Treg_CD62Lneg.txt",
   check.names = FALSE
 ) |>
   rename(
