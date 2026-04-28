@@ -1085,5 +1085,353 @@ ggsave("plots/Dotplot/Fig3L.pdf", plot = p_combined, dpi = 320, width = 8, heigh
 # Fig 3L - Y0/diagnosis
 # ============================================================
 ```{r}
+# @title ASCENT wSUMMIT Treg-associated clonotype fold-change plot from Y0
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(reshape2)
+  library(plotrix)
+})
+
+# =============================================================================
+# 1. Input paths (Updated for /Volumes/T7 mount)
+# =============================================================================
+
+PATH_MD <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/Files/ASCENT_wSUMMIT_md.csv"
+
+PATH_OVERLAP_BATCH1 <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/mixcr_wSUMMIT_output_batch1/ASCENT_wSUMMIT_tumour_blood_overlap_batch1_180724.csv"
+
+PATH_TREG_METADATA <- "/Volumes/T7/Sam Gamble/ASCENT/Files/met_withssGSEA_TregSubsets_ASCENT-TS300824.csv"
+
+SAVE_PLOT <- FALSE
+# Updated output path to match the new volume mount
+OUT_PDF <- "/Volumes/T7/Sam Gamble/ASCENT/TCR/SUMMIT_batch1_cell_type/Treg/treg_subset_fc_vs_Y0_standalone.pdf"
+
+# =============================================================================
+# 2. Small helper functions
+# =============================================================================
+
+stop_if_missing <- function(path, label) {
+  if (!file.exists(path)) {
+    stop(label, " not found:\n", path, call. = FALSE)
+  }
+}
+
+require_cols <- function(df, cols, df_name) {
+  missing <- setdiff(cols, colnames(df))
+  if (length(missing) > 0) {
+    stop(
+      df_name, " is missing required columns:\n",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
+  }
+}
+
+std_error_safe <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(NA_real_)
+  plotrix::std.error(x, na.rm = TRUE)
+}
+
+format_p_value <- function(p_value) {
+  if (is.na(p_value)) {
+    return("p=NA")
+  } else if (p_value == 0) {
+    return("p=0")
+  } else if (p_value > 1e-3) {
+    return(paste0("p=", sprintf("%0.3f", p_value)))
+  } else {
+    return(paste0("p=", sprintf("%0.2e", p_value)))
+  }
+}
+
+
+# =============================================================================
+# 3. Load inputs
+# =============================================================================
+
+stop_if_missing(PATH_MD, "ASCENT metadata")
+stop_if_missing(PATH_OVERLAP_BATCH1, "Tumour-blood overlap batch 1 file")
+stop_if_missing(PATH_TREG_METADATA, "Treg single-cell metadata")
+
+md_ws <- read.csv(PATH_MD, stringsAsFactors = FALSE)
+overlap <- read.csv(PATH_OVERLAP_BATCH1, stringsAsFactors = FALSE)
+ct_md <- read.csv(PATH_TREG_METADATA, stringsAsFactors = FALSE)
+
+
+# =============================================================================
+# 4. Validate expected schemas
+# =============================================================================
+
+require_cols(
+  overlap,
+  cols = c("patient_id", "tp", "CDR3.aa", "CDR3.nt", "Proportion"),
+  df_name = "Tumour-blood overlap file"
+)
+
+require_cols(
+  ct_md,
+  cols = c("cell.types", "BATF_Treg_UCell", "CDR3B", "orig.ident"),
+  df_name = "Treg single-cell metadata"
+)
+
+
+# =============================================================================
+# 5. Recreate the Treg annotation object
+# =============================================================================
+
+ct_md1 <- ct_md %>%
+  dplyr::select(cell.types, BATF_Treg_UCell, CDR3B, orig.ident) %>%
+  mutate(
+    patient_id = ifelse(
+      orig.ident != "P137",
+      gsub("P", "ASC-0", orig.ident),
+      gsub("P", "ASC-", orig.ident)
+    )
+  ) %>%
+  na.omit()
+
+ct_md2 <- ct_md1 %>%
+  group_by(patient_id, CDR3B, cell.types) %>%
+  summarise(mean_Ucell_score = mean(BATF_Treg_UCell, na.rm = TRUE), .groups = "drop") %>%
+  reshape2::dcast(patient_id + CDR3B ~ cell.types, value.var = "mean_Ucell_score")
+
+
+# =============================================================================
+# 6. Recreate overlap_b1_ct_treg for the plot
+# =============================================================================
+
+overlap_b1_ct <- overlap %>%
+  mutate(
+    tp = factor(tp, levels = c("Y0", "3m", "Y1", "diagnosis", "tumour", "parenchyma"))
+  )
+
+overlap_b1_ct_treg <- overlap_b1_ct %>%
+  left_join(
+    ct_md2 %>% rename(CDR3.aa = CDR3B),
+    by = c("patient_id", "CDR3.aa")
+  )
+
+
+# =============================================================================
+# 7. Define Treg subsets to plot
+# =============================================================================
+
+treg_cols_all <- c("Effector Treg", "Naive Treg", "Prolif Treg", "Tcm-like Treg")
+treg_cols_available <- intersect(treg_cols_all, colnames(overlap_b1_ct_treg))
+
+if (length(treg_cols_available) == 0) {
+  stop(
+    "No expected Treg subset columns found after joining metadata.\n",
+    "Expected at least one of: ",
+    paste(treg_cols_all, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+treg_cols_plot <- intersect(
+  c("Effector Treg", "Naive Treg", "Tcm-like Treg"),
+  treg_cols_available
+)
+
+
+# =============================================================================
+# 8. Compute FC versus Y0
+# =============================================================================
+
+make_fc_summary <- function(df, subset_col) {
+  wide_df <- df %>%
+    filter(!is.na(.data[[subset_col]])) %>%
+    filter(tp %in% c("Y0", "3m", "Y1", "diagnosis")) %>%
+    dplyr::select(patient_id, CDR3.aa, CDR3.nt, tp, Proportion) %>%
+    reshape2::dcast(
+      patient_id + CDR3.nt + CDR3.aa ~ tp,
+      value.var = "Proportion"
+    )
+  
+  for (needed_col in c("Y0", "3m", "Y1", "diagnosis")) {
+    if (!needed_col %in% colnames(wide_df)) {
+      wide_df[[needed_col]] <- NA_real_
+    }
+  }
+  
+  fc_long <- wide_df %>%
+    mutate(
+      fc_3m = `3m` / Y0,
+      fc_y1 = Y1 / Y0,
+      fc_diag = diagnosis / Y0
+    ) %>%
+    dplyr::select(patient_id, CDR3.aa, CDR3.nt, fc_3m, fc_y1, fc_diag) %>%
+    reshape2::melt(
+      id.vars = c("patient_id", "CDR3.aa", "CDR3.nt"),
+      variable.name = "fc_tp",
+      value.name = "fc"
+    ) %>%
+    filter(is.finite(fc))
+  
+  fc_summary <- fc_long %>%
+    group_by(fc_tp) %>%
+    summarise(
+      mean_fc = mean(fc, na.rm = TRUE),
+      se = std_error_safe(fc),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      ymin = mean_fc - se,
+      ymax = mean_fc + se
+    )
+  
+  bind_rows(
+    tibble(
+      fc_tp = "y0",
+      mean_fc = 1,
+      se = 0,
+      ymin = 1,
+      ymax = 1
+    ),
+    fc_summary
+  ) %>%
+    mutate(
+      cell.types = subset_col,
+      fc_tp = factor(fc_tp, levels = c("y0", "fc_3m", "fc_y1", "fc_diag"))
+    )
+}
+
+fig_mse1 <- map_dfr(
+  treg_cols_available,
+  ~ make_fc_summary(overlap_b1_ct_treg, .x)
+)
+
+
+# =============================================================================
+# 9. Compute Y0 vs diagnosis p-values
+# =============================================================================
+
+make_y0_diag_p <- function(df, subset_col) {
+  test_df <- df %>%
+    filter(!is.na(.data[[subset_col]])) %>%
+    filter(tp %in% c("Y0", "diagnosis")) %>%
+    filter(Proportion > 0) %>%
+    mutate(tp = droplevels(factor(tp)))
+  
+  if (n_distinct(test_df$tp) < 2 || nrow(test_df) < 3) {
+    return(NA_real_)
+  }
+  
+  # Removed 'paired = FALSE' to avoid the formula method error
+  t.test(
+    log(Proportion, base = 10) ~ tp,
+    data = test_df,
+    alternative = "two.sided"
+  )$p.value
+}
+
+fig_mse_p <- tibble(cell.types = treg_cols_available) %>%
+  mutate(
+    p_val = map_dbl(cell.types, ~ make_y0_diag_p(overlap_b1_ct_treg, .x)),
+    p_label = map_chr(p_val, format_p_value)
+  )
+
+p_text_df <- fig_mse_p %>%
+  filter(cell.types %in% treg_cols_plot) %>%
+  mutate(
+    x = 0.5,
+    y = case_when(
+      cell.types == "Effector Treg" ~ 4.0,
+      cell.types == "Naive Treg" ~ 3.8,
+      cell.types == "Tcm-like Treg" ~ 3.6,
+      TRUE ~ 3.4
+    ),
+    label = paste0("Y0 vs Diag. ", p_label)
+  )
+
+
+# =============================================================================
+# 10. Plot
+# =============================================================================
+
+treg_cols <- c(
+  "Prolif Treg" = "cyan1",
+  "Effector Treg" = "firebrick",
+  "Tcm-like Treg" = "lightseagreen",
+  "Naive Treg" = "olivedrab2"
+)
+
+p <- ggplot(
+  data = fig_mse1 %>% filter(cell.types %in% treg_cols_plot),
+  mapping = aes(x = fc_tp, y = mean_fc)
+) +
+  geom_errorbar(
+    aes(ymin = ymin, ymax = ymax),
+    stat = "identity",
+    width = 0.1,
+    size = 0.8
+  ) +
+  geom_line(
+    aes(group = cell.types, color = cell.types),
+    size = 1
+  ) +
+  geom_point(
+    aes(fill = cell.types),
+    size = 5,
+    pch = 21,
+    color = "black",
+    alpha = 0.8
+  ) +
+  geom_text(
+    data = p_text_df,
+    aes(x = x, y = y, label = label, color = cell.types),
+    inherit.aes = FALSE,
+    size = 5,
+    hjust = 0,
+    show.legend = FALSE
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = treg_cols) +
+  scale_color_manual(values = treg_cols) +
+  theme(
+    axis.title.y = element_text(size = 24, hjust = 0.5),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 20, color = "black"),
+    axis.text.y = element_text(size = 20, color = "black"),
+    legend.title = element_text(size = 20, color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(100, 230, 100, 230),
+    legend.text = element_text(size = 18),
+    strip.text = element_text(size = 21),
+    legend.position = "top",
+    axis.ticks = element_line(color = "black"),
+    axis.line = element_line(color = "black")
+  ) +
+  labs(
+    y = "Mean Proportion of repertoire\n(FC vs Y0)",
+    fill = NULL,
+    color = NULL
+  ) +
+  scale_x_discrete(labels = c("Y0", "3m", "Y1", "Diagnosis")) +
+  guides(
+    fill = guide_legend(override.aes = list(size = 5)),
+    color = guide_none()
+  )
+
+print(p)
+
+if (SAVE_PLOT) {
+  ggsave(
+    filename = OUT_PDF,
+    plot = p,
+    dpi = 320,
+    width = 12,
+    height = 8
+  )
+}
+
+# Diagnostic Summary
+cat("\nTreg columns found:\n")
+print(treg_cols_available)
+cat("\nY0 vs diagnosis p-values:\n")
+print(fig_mse_p)
 
 ```
