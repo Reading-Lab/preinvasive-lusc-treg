@@ -27,8 +27,8 @@ suppressPackageStartupMessages({
 # ============================================================
 # 0) Load lesion object and harmonise metadata
 # ============================================================
-seu <- readRDS("/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/PBMC_CD4_SG_clustering_names_110925.rds")
-lesion <- readRDS("/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/newTcells_newPID_version1-TS260825.rds")
+seu <- readRDS("PBMC_CD4_SG_clustering_names_110925.rds")
+lesion <- readRDS("newTcells_newPID_version1-TS260825.rds")
 
 md <- lesion@meta.data |>
   mutate(
@@ -255,7 +255,7 @@ stopifnot(length(link_col) == nrow(chord_df_plot), !any(is.na(link_col)))
 # ============================================================
 # 10) Plot to PDF
 # ============================================================
-out_pdf <- "/Users/Petros/Downloads/all_comps_circos_plot_grey_x10scale_updated.pdf"
+out_pdf <- "all_comps_circos_plot_grey_x10scale_updated.pdf"
 pdf(out_pdf, width = 8, height = 8)
 
 circos.clear()
@@ -762,7 +762,7 @@ for (i in 1:length(unique(hallmark$gs_name))) {
 saveRDS(gl_list, "gl_list.rds")
 
 # import UCell scores
-batf_lp_ucell <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/BATF_lesPBMC_seurat_UCell.rds")
+batf_lp_ucell <- readRDS("BATF_lesPBMC_seurat_UCell.rds")
 batf_lp_ucell <- batf_lp_ucell@meta.data
 
 cols <- grepl("GOBP|HALLMARK|cells", colnames(batf_lp_ucell))
@@ -826,7 +826,7 @@ for (i in sigs) {
   
   mem_mods[[i]] <- results_df
 }
-source("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/SG_code/mod_results_df.R")
+source("mod_results_df.R")
 mem_mods1 <- bind_rows(mem_mods, .id = "signature") %>% 
   filter(!grepl("Intercept", group)) %>% 
   dplyr::rename(std.error = `Std. Error`,
@@ -1038,7 +1038,7 @@ library(purrr)
 # ----------------------------
 # 0) BATF Treg signature from pseudobulk
 # ----------------------------
-pb_gene_sigs <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell.rds")
+pb_gene_sigs <- readRDS("pb_gene_sigs_Tcell.rds")
 pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
 
 gene.sig.list.pb <- vector("list", length(pb_gene_sigs))
@@ -1490,7 +1490,7 @@ ggsave("plots/PBMC/Les_PBMC_recluster_pseudotime_genes_FOXP1.pdf", dpi=320, widt
 ```{r}
 library(CATALYST)
 
-sce = readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/RDS objects/PID_flow_sce.RDS")
+sce = readRDS("PID_flow_sce.RDS")
 
 plotDR(sce, "UMAP", color_by = c("FOXP3","CD45RA","CD39", "CCR7", "Ki67", "PD-1")) +
   scale_fill_viridis_c(option = "magma") +
@@ -1712,8 +1712,8 @@ library(ggrepel)
 # ----------------------------
 # 0) Paths and input
 # ----------------------------
-freq_file <- "E:/Sam Gamble/Flow cytometry clustering/PID/CD4 - CPM 107/107PID_CD4_cluster_freqs.csv"
-meta_file <- "E:/Sam Gamble/PID/Files/PID_68_samples_231122.csv"
+freq_file <- "107PID_CD4_cluster_freqs.csv"
+meta_file <- "PID_68_samples_231122.csv"
 
 cd4_clus <- read.csv(
   freq_file,
@@ -1937,7 +1937,7 @@ library(lmerTest)
 library(emmeans)
 
 # sample-level data
-treg_39mg <- rio::import("E:/Sam Gamble/PID/Files/PID_RAneg_39pos_foxpos_final_freqs.xlsx") |>
+treg_39mg <- rio::import("PID_RAneg_39pos_foxpos_final_freqs.xlsx") |>
   as_tibble() |>
   dplyr::select(1:4) |>
   dplyr::rename(treg_39 = `CD45RA-FoxP3+CD39+`) |>
@@ -2244,12 +2244,12 @@ final_panel <- ggpubr::ggarrange(pid_row, ascent_row, nrow = 2)
 print(final_panel)
 
 # Save PID forest plot
-ggsave(filename = "/Users/Petros/Downloads/pid_forest_plot.pdf", 
+ggsave(filename = "pid_forest_plot.pdf", 
        plot = pid_forest_plot, 
        width = 12, height = 8, device = "pdf")
 
 # Save ASCENT forest plot
-ggsave(filename = "/Users/Petros/Downloads/asc_forest_plot.pdf", 
+ggsave(filename = "asc_forest_plot.pdf", 
        plot = asc_forest_plot, 
        width = 12, height = 8, device = "pdf")
 
