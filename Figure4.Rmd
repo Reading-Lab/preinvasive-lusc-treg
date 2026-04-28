@@ -21,7 +21,7 @@ library(ggpubr)
 library(scales)
 library(forcats)
 
-join <- readRDS("E:/Sam Gamble/PID/Code_revisions/March_2025/RDS/NTCU_join_names_100625.rds")
+join <- readRDS("NTCU_join_names_100625.rds")
 
 # 1) Define gene modules
 gene_sets <- list(
@@ -162,7 +162,7 @@ p <- ggplot(summ, aes(x = t.cell.types, y = gene)) +
 p
 
 ggsave(
-  "E:/Sam Gamble/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/join/join_dotplot_wide_rightlabels.pdf",
+  "join_dotplot_wide_rightlabels.pdf",
   plot = p,
   dpi = 320,
   width = 6,
@@ -201,7 +201,7 @@ ggplot(md_Tcell1 %>% filter(grepl("Cd4|Treg", t.cell.types)), aes(x = UMAP_1, y 
                                 "Unconventional T cell" = "mediumaquamarine","Tcm-like Treg (1)" = "lightseagreen", "Tcm-like Treg (2)" = "lightblue4", 
                                 "Th17 Cd4" = "lightpink2", "Batf Treg" = "firebrick","Tm Cd8" = "royalblue1", "Tcm Cd4" = "darkgoldenrod4", "Temra Cd8" = "darkorchid3"))
 
-ggsave("E:/Sam Gamble/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/join/Tcell_UMAP_side_CD4.pdf", dpi=320, width=15, height=15)
+ggsave("Tcell_UMAP_side_CD4.pdf", dpi=320, width=15, height=15)
 ```
 
 # ============================================================
@@ -220,7 +220,7 @@ suppressPackageStartupMessages({
 })
 
 # 2) Load the Seurat object 
-join <- readRDS("/Volumes/UCL_CI_HD1/CI/PhD/PID/Code_revisions/March_2025/RDS/NTCU_join_names_100625.rds")
+join <- readRDS("NTCU_join_names_100625.rds")
 
 # ----------------------------
 # 3) Metadata: define sample_id, pathology, and filter to w24
@@ -403,8 +403,8 @@ library(scales)
 # ------------------------------------------------------------
 # 1) Load inputs
 # ------------------------------------------------------------
-gl_list <- readRDS("E:/Sam Gamble/PID/Code_revisions/Jan_2025/RDS/gl_list_treg_signatures.rds")
-join.markers.names <- readRDS("E:/Sam Gamble/PID/Code_revisions/March_2025/RDS/NTCU_join_markers_names_100625.rds")
+gl_list <- readRDS("gl_list_treg_signatures.rds")
+join.markers.names <- readRDS("NTCU_join_markers_names_100625.rds")
 
 mouse_human_genes <- read.delim(
   "http://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",
@@ -463,7 +463,7 @@ gsea_mouse_df <- stack(gl_list) |>
 # ------------------------------------------------------------
 # 4) Add BATF Treg pseudobulk signature as another mouse pathway
 # ------------------------------------------------------------
-batf_human <- readRDS("E:/Sam Gamble/PID/Code_revisions/July_2025/RDS/pb_gene_sigs_Tcell_260825.rds")[["BATF Treg"]] |>
+batf_human <- readRDS("pb_gene_sigs_Tcell_260825.rds")[["BATF Treg"]] |>
   as_tibble() |>
   filter(
     !is.na(genes),
@@ -646,7 +646,7 @@ ggsave(
 ```{r}
 library(ggtern)
 
-pb_gene_sigs <- readRDS("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/RDS/Batf_Treg_exp_pb_sigs.rds")
+pb_gene_sigs <- readRDS("Batf_Treg_exp_pb_sigs.rds")
 
 pb_sigs <- bind_rows(pb_gene_sigs, .id = "final_group") %>% 
   filter(!grepl("^Ac|^Hb|^Trg|^Tra|^Trb|Rik", genes)) %>% 
@@ -712,7 +712,7 @@ ggtern(data = pb_sigs_norm, aes(x = Control_prop, y = NTCU_prop, z = NTCU_expand
     y = "NTCU", 
     z = "NTCU expanded"
     )
-ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/sharing_wBATF/pb_exp_ternary_plot.pdf", dpi=320, width=13, height=13)
+ggsave("pb_exp_ternary_plot.pdf", dpi=320, width=13, height=13)
 
 ```
 
@@ -720,7 +720,109 @@ ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mous
 # Fig 4I - sig heatmap
 # ============================================================
 ```{r}
+# Load required libraries
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(rstatix)
+library(Seurat)
 
+# 1. Load data
+batf_sub_ucell <- readRDS("seu_batf_ucell.rds")
+batf_ucell <- batf_sub_ucell@meta.data  
+
+# 2. Filter and reshape data
+batf_ucell1 <- batf_ucell %>% 
+  select(matches("GOBP|HALLMARK|exp_group|patient|pathology")) %>%
+  pivot_longer(
+    cols = -c(patient, pathology, exp_group), 
+    names_to = "signature", 
+    values_to = "score"
+  ) %>% 
+  filter(grepl("MHC_MOLECULE|TGF_BETA|TNFA|IL2|CHEMOTAXIS|INFLAMMATORY", signature))
+
+# 3. Run Linear Mixed Models (omitting confidence intervals for speed)
+sigs <- unique(batf_ucell1$signature)
+mem_mods <- list()
+
+for (i in sigs) {
+  df <- batf_ucell1 %>% filter(signature == i)
+  
+  mod <- lmer(score ~ exp_group + (1 | patient), data = df, REML = FALSE)
+  
+  results_df <- as.data.frame(summary(mod)$coefficients) %>% 
+    mutate(exp_group = row.names(.))
+  
+  mem_mods[[i]] <- results_df
+}
+
+# 4. Format LMM results for heatmap mapping
+mem_mods1 <- bind_rows(mem_mods, .id = "signature") %>% 
+  filter(!grepl("Intercept", exp_group)) %>% 
+  dplyr::rename(
+    std.error = `Std. Error`,
+    t_value = `t value`,
+    p_value = `Pr(>|t|)`
+  ) %>% 
+  bind_rows(
+    data.frame(
+      signature = sigs,
+      Estimate = 0,
+      p_value = 1,
+      exp_group = "Control"
+    )
+  ) %>% 
+  mutate(
+    p.adj = p.adjust(p_value, method = "BH"),
+    exp_group = gsub("exp_group", "", exp_group)
+  ) %>% 
+  add_significance("p.adj")
+
+# Clean up non-significant labels
+mem_mods1$p.adj.signif[mem_mods1$p.adj.signif == "ns"] <- ""
+
+# 5. Prepare plot data (using case_when for cleaner renaming)
+plot_data <- mem_mods1 %>% 
+  group_by(signature) %>% 
+  mutate(
+    scaled_estimate = scale(Estimate),
+    signature = case_when(
+      grepl("MHC_MOLECULE", signature) ~ "TCR_pMHC_contact via APC",
+      grepl("CHEMOTAXIS", signature)   ~ "T_CELL_CHEMOTAXIS",
+      grepl("IL2", signature)          ~ "IL2_STA5_SIGNALLING",
+      grepl("INFLAMMATORY", signature) ~ "INFLAMMATORY RESPONSE",
+      grepl("TGF_BETA", signature)     ~ "TGF_BETA SIGNALLING",
+      TRUE                             ~ "TNFA_SIGNALLING VIA_NFKB"
+    )
+  ) %>% 
+  filter(signature %in% c("TCR_pMHC_contact via APC", "IL2_STA5_SIGNALLING", "T_CELL_CHEMOTAXIS"))
+
+# 6. Plot and Save
+ggplot(data = plot_data, mapping = aes(y = signature, x = exp_group)) +
+  geom_tile(aes(fill = scaled_estimate), color = "black") +
+  geom_text(aes(label = p.adj.signif), color = "black", size = 6, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "dodgerblue3", 
+    mid = "white", 
+    high = "firebrick", 
+    midpoint = 0
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y  = element_blank(),
+    axis.title.x  = element_text(size = 15, color = 'black', hjust = 0.5),
+    axis.text.x   = element_text(size = 10, vjust = 1, hjust = 1, angle = 45, color = "black"),
+    axis.text.y   = element_text(size = 10, vjust = 0.5, color = "black"),
+    legend.text   = element_text(size = 10, color = "black"),
+    legend.title  = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position  = 'top',
+    axis.line   = element_blank(), 
+    axis.ticks  = element_blank()
+  )
+
+ggsave("MEM_UCell_sigs_exp_hm1.pdf", dpi = 320, width = 7, height = 8)
 ```
 
 
@@ -738,7 +840,7 @@ library(circlize)
 # ------------------------------------------------------------------
 # 2. Load the data & Apply Global Filters
 # ------------------------------------------------------------------
-data <- read.csv("/Volumes/T7/Sam Gamble/PID/Code_revisions/March_2025/Files/met_dLN_Lung_CP_NTCU-TS250325.csv")
+data <- read.csv("met_dLN_Lung_CP_NTCU-TS250325.csv")
 
 # Filter out Stem-like CD4 cells specifically from the Lesion (L) compartment
 data <- data %>%
@@ -889,7 +991,7 @@ for (tgt_pathology in pathologies_to_plot) {
   # 9. Render the Circos Plot
   # ------------------------------------------------------------------
   # Dynamic file name generated per loop
-  pdf_name <- paste0("/Users/Petros/Downloads/all_comps_circos_plot_grey_", tgt_pathology, "_updated.pdf")
+  pdf_name <- paste0("", tgt_pathology, "_updated.pdf")
   pdf(pdf_name, width=8, height=8)
   
   circos.clear()
@@ -938,9 +1040,9 @@ library(Seurat); library(dplyr); library(ggplot2); library(patchwork)
 library(tidyr); library(lme4); library(tibble); library(forcats)
 library(broom.mixed); library(purrr)
 
-lung_path <- "/Volumes/T7/Sam Gamble/PID/Code_revisions/March_2025/RDS/newNTCU_Lung-TS150425.rds"
-cp_path   <- "/Volumes/T7/Sam Gamble/PID/Code_revisions/March_2025/RDS/newNTCU_CP-TS150425.rds"
-dln_path  <- "/Volumes/T7/Sam Gamble/PID/Code_revisions/March_2025/RDS/newNTCU_Tcells_dLN-TS150425.rds"
+lung_path <- "newNTCU_Lung-TS150425.rds"
+cp_path   <- "newNTCU_CP-TS150425.rds"
+dln_path  <- "newNTCU_Tcells_dLN-TS150425.rds"
 
 # Memory-efficient extraction
 extract_md <- function(path, loc_name) {
@@ -1303,10 +1405,10 @@ p_combined <- (p_stacked | p_forest_blood) / (p_lesion | p_forest_lesion) +
 
 print(p_combined)
 
-ggsave("/Users/Petros/Downloads/Fig.4K.pdf", p_stacked, width=6, height=8)
-ggsave("/Users/Petros/Downloads/Fig.S8I.pdf", p_forest_blood, width=9, height=8) 
-ggsave("/Users/Petros/Downloads/Fig.S8G.pdf", p_lesion, width=6, height=8)
-ggsave("/Users/Petros/Downloads/Fig.S8H.pdf", p_forest_lesion, width=9, height=8)
+ggsave("/Fig.4K.pdf", p_stacked, width=6, height=8)
+ggsave("/Fig.S8I.pdf", p_forest_blood, width=9, height=8) 
+ggsave("/Fig.S8G.pdf", p_lesion, width=6, height=8)
+ggsave("/Fig.S8H.pdf", p_forest_lesion, width=9, height=8)
 
 # ------------------------------------------------------------------
 # 8. Reverse Blood Sharing Logic
@@ -1493,12 +1595,12 @@ p_all_sharing <- p_all_sharing &
 print(p_all_sharing)
 
 # Individual Saves 
-ggsave("/Users/Petros/Downloads/Fig.S8G_WithinLung_23042026.pdf", p_lesion, width=4, height=4)
+ggsave("/Fig.S8G_WithinLung_23042026.pdf", p_lesion, width=4, height=4)
 
-ggsave("/Users/Petros/Downloads/Fig.4K_Blood2Lung_23042026.pdf", p_rev_stacked, width=4, height=4)
+ggsave("/Fig.4K_Blood2Lung_23042026.pdf", p_rev_stacked, width=4, height=4)
 
 ggsave(
-  filename = "/Users/Petros/Downloads/Fig.S8H_WithinLung_Forest_23042026.pdf",
+  filename = "/Fig.S8H_WithinLung_Forest_23042026.pdf",
   plot = p_forest_lesion,
   width = 6,
   height = 4,
@@ -1506,7 +1608,7 @@ ggsave(
 )
 
 ggsave(
-  filename = "/Users/Petros/Downloads/Fig.S8I__Blood2Lung_Forest_23042026.pdf", 
+  filename = "/Fig.S8I__Blood2Lung_Forest_23042026.pdf", 
   plot = p_rev_forest, 
   width=6, 
   height=4,
@@ -1566,7 +1668,7 @@ print(as.data.frame(all_forest_stats), row.names = FALSE)
 # ============================================================
 ```{r}
 # import the cell typing for pseudotime analysis
-all_comps_anno <- read.csv("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/Files/all_comps_cell_types_noLN.csv") %>% 
+all_comps_anno <- read.csv("all_comps_cell_types_noLN.csv") %>% 
   mutate(seurat_clusters = as.factor(seurat_clusters))
 
 all_comps_md <- all_comps@meta.data %>% 
@@ -1575,13 +1677,13 @@ row.names(all_comps_md) <- all_comps_md$cells
 
 all_comps@meta.data <- all_comps_md
 
-saveRDS(all_comps, "/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/RDS/NTCU_all_comps_names_220825.rds")
+saveRDS(all_comps, "NTCU_all_comps_names_220825.rds")
 
 # export just the cells which share with expanded BATF Tregs for pseudotime
 expanded_batf_treg <- cdr3_overlap_exp %>% 
   filter(exp_group == "Expanded")
 
-# only 1305 cells...
+# only 1305 cells
 all_comps_md1 <- all_comps@meta.data %>% 
   mutate(expanded = ifelse(cdr3 %in% expanded_batf_treg$cdr3, "Expanded", NA)) %>% 
   filter(!is.na(expanded) & pathology == "NTCU") %>% 
@@ -1589,14 +1691,14 @@ all_comps_md1 <- all_comps@meta.data %>%
 
 all_comps_exp <- subset(all_comps, cells = all_comps_md1)
 
-saveRDS(all_comps_exp, "/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/RDS/NTCU_all_comps_names_expanded_220825.rds")
+saveRDS(all_comps_exp, "NTCU_all_comps_names_expanded_220825.rds")
 
-all_comps <- readRDS("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/RDS/NTCU_all_comps_names_expanded_220825.rds")
+all_comps <- readRDS("NTCU_all_comps_names_expanded_220825.rds")
 all_comps_md <- all_comps@meta.data
 
 # import the pseudotime values to plot maybe in a UMAP
 # import from the object where there was no inclusion of lymph nodes
-pseudotime <- read.csv("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/Files/all_comps_pseudotime_values_exp_only_noLN.csv") %>% 
+pseudotime <- read.csv("all_comps_pseudotime_values_exp_only_noLN.csv") %>% 
   dplyr::rename(cells = cell_id) %>% 
   left_join(as.data.frame(all_comps@reductions[["umap"]]@cell.embeddings) %>% 
               mutate(cells = row.names(.)),
@@ -1623,10 +1725,10 @@ ggplot(pseudotime, aes(x = UMAP_1, y = UMAP_2)) +
   guides(color = guide_legend(override.aes = list(alpha=1))) +
   scale_color_manual(values = c("Th17 Cd4" = "lightpink2", "Tcm-like Treg_L" = "lightseagreen", "Tcm-like Treg_CP" = "lightblue4", "Batf Treg_L" = "firebrick",
                                "Naive-like Cd4" = "gold1", "Tcm Cd4" = "navajowhite", "Effector Treg_CP" = "firebrick1"))
-ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/all_comps/trajectory_plot_t_cell_types1.pdf", dpi=320, width = 9, height = 6)
+ggsave("trajectory_plot_t_cell_types1.pdf", dpi=320, width = 9, height = 6)
 
 # import the pseudotime of the all_comps expanded BATF sequences
-pseudotime <- read.csv("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/Files/all_comps_pseudotime_values_exp.csv") %>% 
+pseudotime <- read.csv("all_comps_pseudotime_values_exp.csv") %>% 
   dplyr::rename(cells = cell_id) %>% 
   left_join(as.data.frame(all_comps@reductions[["umap"]]@cell.embeddings) %>% 
               mutate(cells = row.names(.)),
@@ -1652,7 +1754,7 @@ ggplot(pseudotime, aes(x = UMAP_1, y = UMAP_2)) +
   guides(color = guide_legend(override.aes = list(alpha=1))) +
   scale_color_manual(values = c("Th17 Cd4" = "lightpink2", "Tcm-like Treg_L" = "lightseagreen", "Tcm-like Treg_CP" = "lightblue4", "Batf Treg_L" = "firebrick",
                                 "Naive-like Cd4" = "gold1", "Tcm Cd4" = "navajowhite", "Effector Treg_CP" = "firebrick1"))
-ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/all_comps/UMAP_trajectory_plot_t_cell_types_exp1.pdf", dpi=320, width = 9, height = 6)
+ggsave("UMAP_trajectory_plot_t_cell_types_exp1.pdf", dpi=320, width = 9, height = 6)
 
 
 # instead of a umap, we could do a density plot instead for each subset
@@ -1688,7 +1790,7 @@ ggplot(pseudotime %>% filter(!t.cell.types %in% c("Tcm-like Treg", "Tem Cd4_L"))
   scale_fill_manual(values=c("Th17" = "lightpink2", "Tcm-like_Treg" = "lightseagreen", "Batf_Treg" = "firebrick", "Tem Cd4_L" = "salmon",
                              "Naive_like_CP" = "gold1", "Naive_like_L" = "darkgoldenrod3", "Tcm Cd4_CP" = "navajowhite", "Effector_Treg" = "firebrick1")) +
   scale_y_discrete(limits=limits, expand = expansion(mult=c(0,0.1)))
-ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/all_comps/pseudotime_density_plot_noLN.pdf", dpi=320, width = 5, height = 8)
+ggsave("pseudotime_density_plot_noLN.pdf", dpi=320, width = 5, height = 8)
 
 # now show some key lineage defining markers along the pseudotime trajectory
 genes <- c("Batf", "Tcf7", "Tnfrsf18", "Irf4", "S1pr1")
@@ -1724,7 +1826,7 @@ ggplot(mat %>% mutate(variable = factor(variable, levels = c("Batf", "Tnfrsf18",
   scale_fill_manual(values=c("S1pr1" = "lightseagreen", "Irf4" = "lightblue4", "Batf" = "firebrick", "Tcf7" = "gold1", "Tnfrsf18" = "darkorchid4")) +
   guides(fill=guide_legend(nrow = 2),
          color=guide_legend(nrow = 2))
-ggsave("/Users/samgamble/Desktop/CI/PhD/PID/Code_revisions/March_2025/plots/Mouse_TCR_overlap/all_comps/pseudotime_vs_gex.pdf", dpi=320, width = 5, height = 8)
+ggsave("pseudotime_vs_gex.pdf", dpi=320, width = 5, height = 8)
 
 ```
 
@@ -2100,7 +2202,7 @@ combined_plot
 # Save
 # ------------------------------------------------------------
 ggsave(
-  filename = "C:/Users/andre/Downloads/PDL1_Treg_combined_patchwork.pdf",
+  filename = "PDL1_Treg_combined_patchwork.pdf",
   plot = combined_plot,
   width = 6.8,
   height = 9.2,
@@ -2160,14 +2262,14 @@ library(rio)
 library(ggpubr)
 
 key <- rio::import(
-  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/March_2025/March_2025/Files/KEY_FTY.xlsx"
+  "KEY_FTY.xlsx"
 )
 
 # ----------------------------
 # 1) Total lung Tregs, correct file
 # ----------------------------
 lung <- read.csv(
-  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/March_2025/March_2025/Files/FTY_Lung_cell_num.csv"
+  "FTY_Lung_cell_num.csv"
 ) |>
   left_join(key, by = "mouse_id") |>
   filter(Treatment %in% c("NTCU", "NTCU FTY720")) |>
