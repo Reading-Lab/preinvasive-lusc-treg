@@ -26,7 +26,7 @@ suppressPackageStartupMessages({
 })
 
 # 1) Load Seurat object
-seu <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/RDS objects/newTcells_newPID_version1-TS260825.rds")
+seu <- readRDS("newTcells_newPID_version1-TS260825.rds")
 
 # Identity class: make sure this column exists
 stopifnot("cell.types" %in% colnames(seu@meta.data))
@@ -659,8 +659,8 @@ library(grid)
 # ============================================================
 # 0. USER SETTINGS
 # ============================================================
-seu_path <- "/Volumes/T7/Sam Gamble/PID/Code_revisions/July_2025/RDS/newTcells_newPID_version1-TS260825.rds"
-output_dir <- "/Users/Petros/Downloads/"
+seu_path <- "newTcells_newPID_version1-TS260825.rds"
+output_dir <- ""
 
 # Gene Lists
 target_genes_prog <- c("IRF4", "BATF", "REL", "IL2RA", "CTLA4", "IKZF2", "GATA3", "TNFRSF4", "FOXP3")
@@ -970,13 +970,13 @@ cat(paste0("\nAnalysis complete. Results saved to: ", output_path, "\n"))
 library(dplyr)
 
 # load in metadata and count matrices per patient
-galon <- load("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/RDS/galon.data_BulkRNA-seq_phenoAndBulk.RData")
+galon <- load("galon.data_BulkRNA-seq_phenoAndBulk.RData")
 mat <- as.matrix(jg.data)
 
-id_mat <- read.csv("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/galon_sample_patient_matrix.csv")
+id_mat <- read.csv("galon_sample_patient_matrix.csv")
 jg.pheno <- left_join(jg.pheno, id_mat, by = "ID")
 
-pb_gene_sigs <- readRDS("C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell.rds")
+pb_gene_sigs <- readRDS("pb_gene_sigs_Tcell.rds")
 pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
 
 gene.sig.list.pb <- vector("list", length(pb_gene_sigs))
@@ -1150,8 +1150,8 @@ library(ggplot2)
 # ------------------------------------------------------------
 # 1) Load inputs
 # ------------------------------------------------------------
-gl_list <- readRDS("E:/Sam Gamble/PID/Code_revisions/Jan_2025/RDS/gl_list_treg_signatures.rds")
-pb_gene_sigs <- readRDS("E:/Sam Gamble/PID/Code_revisions/July_2025/RDS/pb_gene_sigs_Tcell_260825.rds")
+gl_list <- readRDS("gl_list_treg_signatures.rds")
+pb_gene_sigs <- readRDS("pb_gene_sigs_Tcell_260825.rds")
 
 # ------------------------------------------------------------
 # 2) Extract BATF Treg pseudobulk DE table
@@ -1309,7 +1309,7 @@ library(ggplot2)
 # 1. Load metadata
 # =========================================================
 md <- read.csv(
-  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/Shim_etal_withOtherCD4Subsets-TS291024.csv"
+  "Shim_etal_withOtherCD4Subsets-TS291024.csv"
 ) |>
   dplyr::select(patient, Response, OS_time, Vital_status, TMB, Tumour_type2) |>
   dplyr::rename(patient_id = patient)
@@ -1319,7 +1319,7 @@ md <- read.csv(
 #    Assumes rows are genes, columns are patients
 # =========================================================
 mat <- read.csv(
-  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/Jan_2025/Jan_2025/Files/Shim_etal_bulkRNAseq.csv"
+  "Shim_etal_bulkRNAseq.csv"
 )
 
 rownames(mat) <- mat$X
@@ -1329,7 +1329,7 @@ mat1 <- as.matrix(mat[, -1, drop = FALSE])
 # 3. Load pseudobulk gene signatures
 # =========================================================
 pb_gene_sigs <- readRDS(
-  "C:/Users/andre/OneDrive - University College London/PhD Year 3/PID paper/Resubmission/July_2025/July_2025/RDS/pb_gene_sigs_Tcell_260825.rds"
+  "pb_gene_sigs_Tcell_260825.rds"
 )
 
 pb_gene_sigs <- pb_gene_sigs[c("Progenitor CD4", "Th17 CD4", "BATF Treg", "Tfh CD4", "Tcm-like Treg")]
